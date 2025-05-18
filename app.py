@@ -138,9 +138,9 @@ elif st.session_state.page == 3:
 
         col1, col2 = st.columns(2)
         with col1:
-            st.image(b_img_np, caption=f"Before Image ({st.session_state.before_date})")
+            st.image(b_img_np, caption=f"Before Image ({st.session_state.before_date})", use_container_width=True)
         with col2:
-            st.image(a_img_np, caption=f"After Image ({st.session_state.after_date})")
+            st.image(a_img_np, caption=f"After Image ({st.session_state.after_date})", use_container_width=True)
 
         st.session_state.b_np = b_img_np
         st.session_state.a_np = a_img_np
@@ -192,9 +192,9 @@ elif st.session_state.page == 4:
             # Original Images Row
             col1, col2 = st.columns(2)
             with col1:
-                st.image(b_np, caption=f"Original Before Image ({before_date})", use_column_width=True)
+                st.image(b_np, caption=f"Original Before Image ({before_date})", use_container_width=True)
             with col2:
-                st.image(a_np, caption=f"Original After Image ({after_date})", use_column_width=True)
+                st.image(a_np, caption=f"Original After Image ({after_date})", use_container_width=True)
 
             # Segmentation Maps Row
             col3, col4 = st.columns(2)
@@ -223,6 +223,9 @@ elif st.session_state.page == 4:
             st.metric("Total Area Changed", f"{change_percentage:.2f}%", 
                      delta=f"{changed_pixels} pixels changed", delta_color="inverse")
 
+            # Create columns for visualization
+            col5, col6 = st.columns([3,1])
+            
             try:
                 # Convert images to proper format for OpenCV
                 b_np_cv = cv2.cvtColor(b_np, cv2.COLOR_RGB2BGR) if len(b_np.shape) == 3 else cv2.cvtColor(cv2.merge([b_np]*3), cv2.COLOR_RGB2BGR)
@@ -233,7 +236,6 @@ elif st.session_state.page == 4:
                     overlay = cv2.addWeighted(b_np_cv, 0.7, diff_cv, 0.3, 0)
                     overlay_rgb = cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB)
                     
-                    col5, col6 = st.columns([3,1])
                     with col5:
                         fig3, ax3 = plt.subplots(figsize=(10,8))
                         ax3.imshow(overlay_rgb)
@@ -242,20 +244,22 @@ elif st.session_state.page == 4:
                         st.pyplot(fig3)
                 else:
                     st.warning("Image dimensions don't match for overlay. Showing difference map instead.")
+                    with col5:
+                        fig3, ax3 = plt.subplots(figsize=(10,8))
+                        ax3.imshow(diff, cmap='Reds')
+                        ax3.set_title("Change Detection Heatmap")
+                        ax3.axis('off')
+                        st.pyplot(fig3)
+
+            except Exception as e:
+                st.error(f"Error creating change visualization: {str(e)}")
+                st.warning("Showing basic difference map instead")
+                with col5:
                     fig3, ax3 = plt.subplots(figsize=(10,8))
                     ax3.imshow(diff, cmap='Reds')
                     ax3.set_title("Change Detection Heatmap")
                     ax3.axis('off')
                     st.pyplot(fig3)
-
-            except Exception as e:
-                st.error(f"Error creating change visualization: {str(e)}")
-                st.warning("Showing basic difference map instead")
-                fig3, ax3 = plt.subplots(figsize=(10,8))
-                ax3.imshow(diff, cmap='Reds')
-                ax3.set_title("Change Detection Heatmap")
-                ax3.axis('off')
-                st.pyplot(fig3)
 
             with col6:
                 st.markdown("**Change Legend**")
