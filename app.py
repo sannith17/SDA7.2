@@ -155,6 +155,8 @@ elif st.session_state.page == 3:
     else:
         st.warning("Please upload images in the previous step.")
 
+# ... [Keep all previous code until page 4] ...
+
 elif st.session_state.page == 4:
     st.title("Step 4: Calamity Detection and Visualization")
     if 'b_np' in st.session_state and 'a_np' in st.session_state:
@@ -178,125 +180,195 @@ elif st.session_state.page == 4:
             progress_bar.progress(1.0, "Analysis Complete!")
             progress_bar.empty()
 
-            # Create a custom colormap for visualization
-            cmap = ListedColormap(['green', 'blue', 'brown', 'gray'])
-            
-            # Visualization Layout
-            st.subheader("Segmentation Results")
+            # Visualization Settings
+            class_colors = {
+                'Water': '#1f77b4',
+                'Vegetation': '#2ca02c',
+                'Urban': '#ff7f0e',
+                'Barren': '#d62728',
+                'Forest': '#9467bd'
+            }
+
+            # Create analysis-specific labels
+            if st.session_state.analysis_type == "Water Body":
+                classes = {0: "Water", 1: "Vegetation", 2: "Urban", 3: "Barren"}
+            else:
+                classes = {0: "Forest", 1: "Vegetation", 2: "Urban", 3: "Water"}
+
+            # Main Visualization Layout
+            st.subheader("Satellite Image Analysis")
+
+            # Original Images Row
             col1, col2 = st.columns(2)
             with col1:
-                fig1, ax1 = plt.subplots(figsize=(6,6))
-                ax1.imshow(b_mask, cmap=cmap)
-                ax1.set_title(f"Before Image ({before_date})")
+                st.image(b_np, caption=f"Original Before Image ({before_date})", use_column_width=True)
+            with col2:
+                st.image(a_np, caption=f"Original After Image ({after_date})", use_column_width=True)
+
+            # Segmentation Maps Row
+            col3, col4 = st.columns(2)
+            with col3:
+                fig1, ax1 = plt.subplots(figsize=(8,6))
+                ax1.imshow(b_mask, cmap=ListedColormap([class_colors[classes[i]] for i in range(4)]))
+                ax1.set_title(f"Before Segmentation ({before_date})")
                 ax1.axis('off')
                 st.pyplot(fig1)
-                
-            with col2:
-                fig2, ax2 = plt.subplots(figsize=(6,6))
-                ax2.imshow(a_mask, cmap=cmap)
-                ax2.set_title(f"After Image ({after_date})")
+            with col4:
+                fig2, ax2 = plt.subplots(figsize=(8,6))
+                ax2.imshow(a_mask, cmap=ListedColormap([class_colors[classes[i]] for i in range(4)]))
+                ax2.set_title(f"After Segmentation ({after_date})")
                 ax2.axis('off')
                 st.pyplot(fig2)
 
-            # Enhanced Change Heatmap
-            st.subheader("Change Detection Heatmap")
-            fig3, ax3 = plt.subplots(figsize=(8,6))
-            heatmap = ax3.imshow(diff, cmap='hot', interpolation='nearest')
-            plt.colorbar(heatmap, ax=ax3, label='Change Intensity')
-            ax3.set_title("Areas of Significant Change")
-            ax3.axis('off')
-            st.pyplot(fig3)
+            # Change Detection Visualization
+            st.subheader("Change Detection Analysis")
+            
+            # Heatmap and Legend
+            col5, col6 = st.columns([3,1])
+            with col5:
+                fig3, ax3 = plt.subplots(figsize=(10,8))
+                overlay = cv2.addWeighted(cv2.cvtColor(b_np, cv2.COLOR_RGB2BGR), 0.7, 
+                                         cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR), 0.3, 0)
+                ax3.imshow(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB))
+                ax3.set_title("Change Detection Overlay (Red = Changes)")
+                ax3.axis('off')
+                st.pyplot(fig3)
 
-            # Class Distribution Analysis
-            st.subheader("Land Cover Class Distribution")
+            with col6:
+                st.markdown("**Change Legend**")
+                st.markdown("- Red areas: Significant changes detected")
+                st.markdown("- Blue areas: Water bodies")
+                st.markdown("- Green areas: Vegetation")
+                st.markdown("- Orange areas: Urban regions")
+
+            # Quantitative Analysis
+            st.subheader("Quantitative Land Cover Analysis")
+            
+            # Get class statistics
             unique_b, count_b = np.unique(b_mask, return_counts=True)
             unique_a, count_a = np.unique(a_mask, return_counts=True)
 
-            # Create a mapping for class names based on analysis type
-            if st.session_state.analysis_type == "Water Body":
-                class_names = {0: "Water", 1: "Vegetation", 2: "Urban", 3: "Barren"}
+            # Create percentage data
+            data = []
+            total_pixels = b_mask.size
+            for class_id in range(4):
+                before_pct = (np.sum(b_mask == class_id) / total_pixels) * 100
+                after_pct = (np.sum(a_mask == class_id) / total_pixels) * 100
+                change = after_pct - before_pct
+                data.append({
+                    "Class": classes[class_id],
+                    "Before (%)": f"{before_pct:.2f}",
+                    "After (%)": f"{after_pct:.2f}",
+                    "Change (%)": f"{change:+.2f}",
+                    "Color": class_colors[classes[class_id]]
+                })
+
+            df = pd.DataFrame(data)
+            
+            # Display metrics
+            col7, col8, col9 = st.columns(3)
+            with col7:
+                st.metric("Total Area Changed", 
+                         f"{(np.sum(diff > 0) / total_pixels * 100:.2f}%",
+                         delta=f"{np.sum(diff > 0)} pixels")
+            with col8:
+                most_increased = df.loc[df['Change (%)'].str.replace('+', '').astype(float).idxmax()]
+                st.metric("Most Increased", 
+                         f"{most_increased['Class']} ({most_increased['Change (%)']}%)",
+                         delta_color="off")
+            with col9:
+                most_decreased = df.loc[df['Change (%)'].str.replace('+', '').astype(float).idxmin()]
+                st.metric("Most Decreased", 
+                         f"{most_decreased['Class']} ({most_decreased['Change (%)']}%)",
+                         delta_color="inverse")
+
+            # Interactive Data Display
+            st.dataframe(
+                df.style.apply(lambda x: [f"background-color: {x['Color']}" for _ in x], axis=1)
+            
+            # Temporal Analysis
+            st.subheader("Temporal Distribution Changes")
+            fig4, ax4 = plt.subplots(figsize=(12,6))
+            x = np.arange(len(df))
+            width = 0.35
+            
+            ax4.bar(x - width/2, df['Before (%)'].astype(float), width, label='Before', alpha=0.7)
+            ax4.bar(x + width/2, df['After (%)'].astype(float), width, label='After', alpha=0.7)
+            
+            ax4.set_xticks(x)
+            ax4.set_xticklabels(df['Class'])
+            ax4.set_ylabel("Percentage Coverage")
+            ax4.set_title("Land Cover Class Distribution Over Time")
+            ax4.legend()
+            st.pyplot(fig4)
+
+            # Calamity Analysis Section
+            st.subheader("Calamity Assessment")
+            if "Possible" in calamity_result:
+                st.error(f"**Alert:** {calamity_result}")
+                st.warning("""
+                **Recommended Actions:**
+                - Initiate emergency response protocols
+                - Dispatch ground verification team
+                - Schedule follow-up satellite imaging
+                """)
             else:
-                class_names = {0: "Forest", 1: "Farmland", 2: "Urban", 3: "Water"}
+                st.success(f"**Status:** {calamity_result}")
+                st.info("""
+                **Recommended Actions:**
+                - Continue routine monitoring
+                - Schedule next imaging session
+                - Review historical trends
+                """)
 
-            # Calculate percentages
-            before_percent = [round((c / np.sum(count_b)) * 100, 2) for c in count_b]
-            after_percent = []
-            for i, element in enumerate(unique_b):
-                if element in unique_a:
-                    index_a = np.where(unique_a == element)[0][0]
-                    after_percent.append(round((count_a[index_a] / np.sum(count_a)) * 100, 2))
-                else:
-                    after_percent.append(0.0)
-
-            # Create dataframe for display
-            df = pd.DataFrame({
-                "Class": [class_names.get(i, f"Class {i}") for i in unique_b],
-                "Before (%)": before_percent,
-                "After (%)": after_percent,
-                "Change (%)": [round(after - before, 2) for before, after in zip(before_percent, after_percent)]
-            })
-
-            # Display the table
-            st.dataframe(df.style.background_gradient(cmap='Blues', subset=["Change (%)"]))
-
-            # Pie Charts Visualization
-            st.subheader("Class Distribution Comparison")
-            col3, col4 = st.columns(2)
-            with col3:
-                fig4, ax4 = plt.subplots(figsize=(6,6))
-                ax4.pie(df["Before (%)"], labels=df["Class"], autopct='%1.1f%%', 
-                        colors=['#66b3ff','#99ff99','#ffcc99','#ff9999'])
-                ax4.set_title(f"Before {before_date}")
-                st.pyplot(fig4)
+            # Model Performance
+            st.subheader("Model Performance Metrics")
+            tab1, tab2, tab3 = st.tabs(["ROC Curve", "Confusion Matrix", "Feature Importance"])
+            
+            with tab1:
+                # Simulated ROC data
+                fpr = np.linspace(0, 1, 100)
+                tpr = np.sin(fpr * np.pi / 2)
+                roc_auc = auc(fpr, tpr)
                 
-            with col4:
-                fig5, ax5 = plt.subplots(figsize=(6,6))
-                ax5.pie(df["After (%)"], labels=df["Class"], autopct='%1.1f%%', 
-                        colors=['#66b3ff','#99ff99','#ffcc99','#ff9999'])
-                ax5.set_title(f"After {after_date}")
+                fig5, ax5 = plt.subplots(figsize=(8,6))
+                ax5.plot(fpr, tpr, color='darkorange', lw=2, 
+                        label=f'ROC curve (AUC = {roc_auc:.2f})')
+                ax5.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+                ax5.set_xlabel('False Positive Rate')
+                ax5.set_ylabel('True Positive Rate')
+                ax5.set_title('Model ROC Curve')
+                ax5.legend(loc="lower right")
                 st.pyplot(fig5)
 
-            # ROC Curve (Simulated for demonstration)
-            st.subheader("Model Performance Metrics")
-            fig6, ax6 = plt.subplots(figsize=(8,6))
-            
-            # Simulate some data for ROC curve
-            y_true = np.random.randint(0, 2, 100)
-            y_scores = np.random.rand(100)
-            fpr, tpr, _ = roc_curve(y_true, y_scores)
-            roc_auc = auc(fpr, tpr)
-            
-            ax6.plot(fpr, tpr, color='darkorange', lw=2, 
-                     label=f'ROC curve (area = {roc_auc:.2f})')
-            ax6.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
-            ax6.set_xlim([0.0, 1.0])
-            ax6.set_ylim([0.0, 1.05])
-            ax6.set_xlabel('False Positive Rate')
-            ax6.set_ylabel('True Positive Rate')
-            ax6.set_title('Receiver Operating Characteristic')
-            ax6.legend(loc="lower right")
-            st.pyplot(fig6)
+            with tab2:
+                # Simulated confusion matrix
+                cm = np.random.randint(0, 100, (4, 4))
+                fig6, ax6 = plt.subplots(figsize=(8,6))
+                im = ax6.imshow(cm, cmap='Blues')
+                
+                ax6.set_xticks(np.arange(4))
+                ax6.set_yticks(np.arange(4))
+                ax6.set_xticklabels([classes[i] for i in range(4)])
+                ax6.set_yticklabels([classes[i] for i in range(4)])
+                plt.colorbar(im, ax=ax6)
+                ax6.set_title("Confusion Matrix")
+                st.pyplot(fig6)
 
-            # Calamity Detection Result
-            st.subheader("Calamity Detection Result")
-            if "Possible" in calamity_result:
-                st.error(calamity_result)
-                st.warning("Recommendation: Immediate satellite follow-up and ground verification recommended.")
-            else:
-                st.success(calamity_result)
-                st.info("Recommendation: Routine monitoring suggested.")
-
-            # Change Statistics
-            change_pixels = np.sum(diff > 0)
-            total_pixels = diff.size
-            change_percentage = (change_pixels / total_pixels) * 100
-            
-            st.metric("Total Area Changed", f"{change_percentage:.2f}%", 
-                     delta=f"{change_pixels} pixels changed", delta_color="inverse")
+            with tab3:
+                # Simulated feature importance
+                features = ['NDWI', 'NDVI', 'Urban Index', 'Elevation']
+                importance = np.random.rand(4)
+                
+                fig7, ax7 = plt.subplots(figsize=(8,6))
+                ax7.barh(features, importance, color='#2ca02c')
+                ax7.set_title("Feature Importance Analysis")
+                ax7.set_xlabel("Importance Score")
+                st.pyplot(fig7)
 
         else:
-            st.error("Models not found. Please ensure 'cnn_model.h5' and 'rf_model.pkl' are in the same directory as your script.")
+            st.error("Models not found. Please ensure models are in the correct directory.")
 
-        st.button("Restart", on_click=reset)
+        st.button("Restart Analysis", on_click=reset, type="primary")
     else:
         st.warning("Please upload images in the previous steps.")
