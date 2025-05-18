@@ -1,6 +1,7 @@
 import streamlit as st
 import numpy as np
 import pandas as pd
+import cv2
 from PIL import Image
 import matplotlib.pyplot as plt
 from sklearn.cluster import KMeans
@@ -9,46 +10,80 @@ from datetime import datetime
 
 st.set_page_config(layout="wide")
 
-# --- Color Mapping ---
-class_colors = {
-    0: [0, 0, 1],    # Blue (Water)
-    1: [1, 0, 0],    # Red (Land)
-    2: [0, 1, 0],    # Green (Vegetation)
-    3: [0.5, 0.5, 0.5] # Grey (Urban)
+# --- Color Mapping & Constants ---
+ANALYSIS_TYPES = {
+    "Water Bodies": {"color": [0, 0.5, 1], "index": 0},
+    "Land Areas": {"color": [1, 0.4, 0.4], "index": 1},
+    "Vegetation": {"color": [0.4, 1, 0.4], "index": 2}
 }
 
-# --- Session State Setup ---
+# --- Image Alignment ---
+def align_images(img1, img2):
+    """Aligns images using ORB feature detection"""
+    orb = cv2.ORB_create()
+    kp1, des1 = orb.detectAndCompute(img1, None)
+    kp2, des2 = orb.detectAndCompute(img2, None)
+    
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+    matches = sorted(matches, key=lambda x: x.distance)[:50]
+    
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
+    
+    M, _ = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
+    aligned_img = cv2.warpPerspective(img1, M, (img2.shape, img2.shape))
+    return aligned_img
+
+# --- Spectral Index Calculation ---
+def calculate_ndwi(img):
+    """Water detection using modified NDWI for RGB"""
+    green = img[:,:,1].astype(float)
+    blue = img[:,:,0].astype(float)
+    return (green - blue) / (green + blue + 1e-6)
+
+def calculate_ndvi(img):
+    """Vegetation detection using modified NDVI for RGB"""
+    red = img[:,:,0].astype(float)
+    green = img[:,:,1].astype(float)
+    return (green - red) / (green + red + 1e-6)
+
+# --- Change Detection ---
+def detect_changes(before, after, analysis_type):
+    """Quantifies changes using spectral indices"""
+    if analysis_type == "Water Bodies":
+        before_idx = calculate_ndwi(before)
+        after_idx = calculate_ndwi(after)
+    elif analysis_type == "Vegetation":
+        before_idx = calculate_ndvi(before)
+        after_idx = calculate_ndvi(after)
+    else:  # Land
+        before_idx = cv2.cvtColor(before, cv2.COLOR_RGB2GRAY)
+        after_idx = cv2.cvtColor(after, cv2.COLOR_RGB2GRAY)
+    
+    diff = after_idx - before_idx
+    return np.clip(diff * 255, 0, 255).astype(np.uint8)
+
+# --- Session State Management ---
 if 'page' not in st.session_state:
     st.session_state.page = 1
+    st.session_state.analysis_type = None
+    st.session_state.georef_data = {}
 
-# --- Image Processing ---
-def kmeans_segmentation(image_np, n_clusters=4):
-    pixels = image_np.reshape(-1, 3)
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42)
-    return kmeans.fit_predict(pixels).reshape(image_np.shape[:2])
-
-# --- Analysis Functions ---
-def calculate_changes(before_mask, after_mask):
-    change_mask = before_mask != after_mask
-    return {
-        "total_change": np.mean(change_mask),
-        "water_change": np.mean((after_mask == 0) & (before_mask != 0)),
-        "land_change": np.mean((after_mask == 1) & (before_mask != 1)),
-        "vegetation_change": np.mean((after_mask == 2) & (before_mask != 2))
-    }
-
-def detect_calamity(date_diff_days, changes):
-    if date_diff_days <= 7 and changes['water_change'] > 0.2:
-        return "High flood risk detected"
-    elif date_diff_days <= 30 and changes['vegetation_change'] > 0.3:
-        return "Possible deforestation"
-    elif changes['land_change'] > 0.25:
-        return "Urban expansion detected"
-    return "No immediate disaster detected"
-
-# --- Interface ---
+# --- Page 1: Analysis Type Selection ---
 if st.session_state.page == 1:
-    st.title("🌍 Satellite Image Analysis")
+    st.title("🌍 Satellite Analysis Setup")
+    cols = st.columns(3)
+    for i, (name, params) in enumerate(ANALYSIS_TYPES.items()):
+        with cols[i]:
+            if st.button(f"**{name}**", use_container_width=True):
+                st.session_state.analysis_type = name
+                st.session_state.page = 2
+
+# --- Page 2: Data Input ---
+elif st.session_state.page == 2:
+    st.title("📤 Data Upload & Alignment")
+    
     col1, col2 = st.columns(2)
     with col1:
         before_img = st.file_uploader("Before Image", type=["png", "jpg"])
@@ -57,68 +92,75 @@ if st.session_state.page == 1:
         after_img = st.file_uploader("After Image", type=["png", "jpg"])
         after_date = st.date_input("After Date")
     
-    if st.button("Analyze") and before_img and after_img:
-        st.session_state.page = 2
+    if st.button("Process Images") and before_img and after_img:
+        # Load and align images
+        before = np.array(Image.open(before_img).convert("RGB"))
+        after = np.array(Image.open(after_img).convert("RGB"))
+        aligned_before = align_images(before, after)
+        
+        # Store in session state
+        st.session_state.georef_data = {
+            "before": aligned_before,
+            "after": after,
+            "dates": (before_date, after_date)
+        }
+        st.session_state.page = 3
 
-if st.session_state.page == 2:
-    st.title("Analysis Results")
+# --- Page 3: Georeferencing Preview ---
+elif st.session_state.page == 3:
+    st.title("🛰️ Georeferenced Data Preview")
     
-    # Process images
-    before = np.array(Image.open(before_img).convert("RGB"))
-    after = np.array(Image.open(after_img).convert("RGB"))
-    
-    # K-means segmentation
-    kmeans_before = kmeans_segmentation(before)
-    kmeans_after = kmeans_segmentation(after)
-    
-    # Visualization
-    fig, ax = plt.subplots(2, 2, figsize=(15, 12))
-    
-    # Original images
-    ax[0,0].imshow(before)
-    ax[0,0].set_title("Before Image")
-    ax[0,1].imshow(after)
-    ax[0,1].set_title("After Image")
-    
-    # K-means maps
-    ax[1,0].imshow(kmeans_before, cmap=ListedColormap([class_colors[i] for i in range(4)]))
-    ax[1,0].set_title("Before Segmentation")
-    ax[1,1].imshow(kmeans_after, cmap=ListedColormap([class_colors[i] for i in range(4)]))
-    ax[1,1].set_title("After Segmentation")
-    
+    fig, ax = plt.subplots(1, 2, figsize=(15, 7))
+    ax.imshow(st.session_state.georef_data["before"])
+    ax.set_title("Aligned Before Image")
+    ax.imshow(st.session_state.georef_data["after"])
+    ax.set_title("After Image")
     st.pyplot(fig)
     
-    # Change analysis
-    changes = calculate_changes(kmeans_before, kmeans_after)
-    date_diff = (after_date - before_date).days
-    calamity = detect_calamity(date_diff, changes)
+    if st.button("Proceed to Analysis"):
+        st.session_state.page = 4
+
+# --- Page 4: Analysis & Visualization ---
+elif st.session_state.page == 4:
+    st.title("📊 Analysis Results")
+    data = st.session_state.georef_data
+    analysis_type = st.session_state.analysis_type
     
-    # Pie charts
-    fig2, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    # Change detection
+    change_map = detect_changes(data["before"], data["after"], analysis_type)
     
-    for mask, title, ax in zip([kmeans_before, kmeans_after], ["Before", "After"], [ax1, ax2]):
-        counts = np.bincount(mask.flatten(), minlength=4)
-        ax.pie(counts, 
-              labels=['Water', 'Land', 'Vegetation', 'Urban'],
-              colors=[class_colors[i] for i in range(4)],
-              autopct='%1.1f%%')
-        ax.set_title(title)
+    # Quantitative analysis
+    threshold = 0.2 * 255
+    change_percentage = np.mean(change_map > threshold) * 100
     
-    st.pyplot(fig2)
+    # Calamity assessment
+    date_diff = (data["dates"] - data["dates"]).days
+    if date_diff <= 7 and change_percentage > 15:
+        risk = "⚠️ Immediate disaster risk!"
+    elif date_diff <= 30 and change_percentage > 25:
+        risk = "🔍 Potential environmental change"
+    else:
+        risk = "✅ Stable conditions"
     
-    # Results table
-    st.subheader("Change Analysis")
-    change_data = {
-        "Metric": ["Total Changed Area", "Water Changes", 
-                  "Land Changes", "Vegetation Changes"],
-        "Percentage (%)": [changes['total_change']*100, changes['water_change']*100,
-                          changes['land_change']*100, changes['vegetation_change']*100]
-    }
-    st.table(pd.DataFrame(change_data))
-    
-    st.subheader("Disaster Risk Assessment")
-    st.write(f"**Time Difference:** {date_diff} days")
-    st.write(f"**Assessment:** {calamity}")
+    # Visualization
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Change Heatmap")
+        fig1, ax1 = plt.subplots()
+        ax1.imshow(change_map, cmap='hot')
+        st.pyplot(fig1)
+        
+    with col2:
+        st.subheader("Change Statistics")
+        plt.figure(figsize=(6, 4))
+        plt.pie([change_percentage, 100-change_percentage], 
+                labels=['Changed', 'Unchanged'], 
+                colors=['#ff4444', '#44ff44'], autopct='%1.1f%%')
+        st.pyplot(plt.gcf())
+        
+        st.metric("Total Changed Area", f"{change_percentage:.1f}%")
+        st.write(f"**Time Difference:** {date_diff} days")
+        st.write(f"**Risk Assessment:** {risk}")
     
     if st.button("New Analysis"):
         st.session_state.page = 1
