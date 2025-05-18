@@ -95,7 +95,12 @@ def align_and_crop_images(before_np, after_np):
         cropped_before = before_np[:y2, :x2] # Cropping based on calculated overlap
         cropped_after = aligned_after[:y2 - int(shift_y), :x2 - int(shift_x)] # Cropping aligned image
 
-        return cropped
+        return cropped_before, cropped_after
+
+    except ValueError as e:
+        st.error(f"Error during image alignment: {e}. Please ensure the uploaded images are somewhat similar in content.")
+        return before_np, after_np # Return original images if alignment fails
+    # The 'try' block is now correctly closed with an 'except' block
 
 # --- Random Forest Prediction ---
 def predict_rf(image_np):
