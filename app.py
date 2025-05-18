@@ -10,7 +10,9 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from datetime import datetime
-from sklearn.metrics import roc_curve, auc  # For ROC curve (requires ground truth)
+import random
+from skimage.registration import phase_cross_correlation
+from scipy.ndimage import shift
 
 st.set_page_config(layout="wide")
 
@@ -41,6 +43,10 @@ if 'page' not in st.session_state:
     st.session_state.page = 1
 if 'analysis_type' not in st.session_state:
     st.session_state.analysis_type = None
+if 'aligned_b_np' not in st.session_state:
+    st.session_state.aligned_b_np = None
+if 'aligned_a_np' not in st.session_state:
+    st.session_state.aligned_a_np = None
 
 # --- Navigation Functions ---
 def next_page():
@@ -58,17 +64,33 @@ def load_and_preprocess(image_file):
     image_np = np.array(image)
     return image_np
 
-# --- PCA Visualization ---
-def pca_visualization(image_np):
-    """Performs PCA on the image for visualization."""
-    img_resized = cv2.resize(image_np, (128, 128))
-    pixels = img_resized.reshape(-1, 3)
-    pca = PCA(n_components=3)
-    scaled = StandardScaler().fit_transform(pixels)
-    pca_img = pca.fit_transform(scaled)
-    pca_img = pca_img.reshape(128, 128, 3)
-    pca_img = (pca_img - pca_img.min()) / (pca_img.max() - pca_img.min())
-    return pca_img
+# --- Image Alignment and Cropping ---
+def align_and_crop_images(before_np, after_np):
+    """Aligns and crops two images to their overlapping region."""
+    before_gray = cv2.cvtColor(before_np, cv2.COLOR_RGB2GRAY)
+    after_gray = cv2.cvtColor(after_np, cv2.COLOR_RGB2GRAY)
+
+    # Perform phase cross-correlation for subpixel alignment
+    shifted, error, diffphase = phase_cross_correlation(before_gray, after_gray)
+    shift_y, shift_x = -shifted
+
+    # Apply the shift to the 'after' image
+    translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+    aligned_after = cv2.warpAffine(after_np, translation_matrix, (after_np.shape[1], after_np.shape[0]))
+
+    # Determine the cropping window
+    h1, w1 = before_np.shape[:2]
+    h2, w2 = aligned_after.shape[:2]
+
+    x1 = max(0, int(shift_x))
+    y1 = max(0, int(shift_y))
+    x2 = min(w1, int(w2 + shift_x))
+    y2 = min(h1, int(h2 + shift_y))
+
+    cropped_before = before_np[y1:y2, x1:x2]
+    cropped_after = aligned_after[y1 - int(shift_y):y2 - int(shift_y), x1 - int(shift_x):x2 - int(shift_x)]
+
+    return cropped_before, cropped_after
 
 # --- Random Forest Prediction ---
 def predict_rf(image_np):
@@ -79,19 +101,16 @@ def predict_rf(image_np):
     segmented_img = prediction.reshape(128, 128)
     return segmented_img
 
-# --- CNN Prediction (Currently Not Directly Used in the Flow) ---
-def predict_cnn(image_np):
-    """Predicts using the CNN model."""
-    img_resized = cv2.resize(image_np, (128, 128)) / 255.0
-    input_array = np.expand_dims(img_resized, axis=0)
-    predictions = cnn_model.predict(input_array)
-    return predictions
+# --- Difference Heatmap with Colored Land Change ---
+def difference_heatmap_colored(before_mask, after_mask, land_class=3): # Assuming land is class 3
+    """Generates a colored heatmap showing changes, especially in land."""
+    diff = after_mask.astype(int) - before_mask.astype(int)
+    heatmap = np.zeros((*diff.shape, 3), dtype=np.uint8)
 
-# --- Difference Map ---
-def difference_heatmap(before_mask, after_mask):
-    """Generates a heatmap showing the difference between two masks."""
-    diff = after_mask != before_mask
-    return diff.astype(np.uint8) * 255
+    # Red for increased land, blue for decreased land
+    heatmap[np.logical_and(before_mask != land_class, after_mask == land_class)] = [255, 0, 0]  # Increased land
+    heatmap[np.logical_and(before_mask == land_class, after_mask != land_class)] = [0, 0, 255]  # Decreased land
+    return heatmap
 
 # --- Calamity Detection ---
 def detect_calamity(date1, date2, mask1, mask2):
@@ -138,28 +157,26 @@ elif st.session_state.page == 2:
         st.info("Please upload satellite images for analysis.")
 
 elif st.session_state.page == 3:
-    st.title("Step 3: Image Preview")
+    st.title("Step 3: Align and Crop Images")
     if 'before_image' in st.session_state and 'after_image' in st.session_state:
         b_img_np = load_and_preprocess(st.session_state.before_image)
         a_img_np = load_and_preprocess(st.session_state.after_image)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(b_img_np, caption=f"Before Image ({st.session_state.before_date})")
-        with col2:
-            st.image(a_img_np, caption=f"After Image ({st.session_state.after_date})")
+        aligned_b, aligned_a = align_and_crop_images(b_img_np, a_img_np)
 
-        st.session_state.b_np = b_img_np
-        st.session_state.a_np = a_img_np
+        st.image([aligned_b, aligned_a], caption=[f"Aligned Before ({st.session_state.before_date})", f"Aligned After ({st.session_state.after_date})"], width=300)
+
+        st.session_state.aligned_b_np = aligned_b
+        st.session_state.aligned_a_np = aligned_a
         st.button("Next", on_click=next_page)
     else:
         st.warning("Please upload images in the previous step.")
 
 elif st.session_state.page == 4:
     st.title("Step 4: Calamity Detection and Visualization")
-    if 'b_np' in st.session_state and 'a_np' in st.session_state and rf_model is not None:
-        b_np = st.session_state.b_np
-        a_np = st.session_state.a_np
+    if 'aligned_b_np' in st.session_state and 'aligned_a_np' in st.session_state and rf_model is not None:
+        b_np = st.session_state.aligned_b_np
+        a_np = st.session_state.aligned_a_np
         before_date = st.session_state.before_date
         after_date = st.session_state.after_date
 
@@ -171,94 +188,91 @@ elif st.session_state.page == 4:
         a_mask = predict_rf(a_np)
         progress_bar.progress(0.66, "Generating After Mask...")
 
-        # Generate difference heatmap
-        diff = difference_heatmap(b_mask, a_mask)
+        # Generate colored difference heatmap
+        colored_diff = difference_heatmap_colored(b_mask, a_mask, land_class=3) # Assuming land is class 3
         progress_bar.progress(1.0, "Analysis Complete!")
         progress_bar.empty()
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.image(b_mask, caption=f"Random Forest - Before Mask ({before_date})")
-        with col2:
-            st.image(a_mask, caption=f"Random Forest - After Mask ({after_date})")
+        col_masks, col_heatmap = st.columns(2)
+        with col_masks:
+            st.image([b_mask, a_mask], caption=[f"RF Mask Before ({before_date})", f"RF Mask After ({after_date})"])
+        with col_heatmap:
+            st.subheader("Land Change Heatmap")
+            st.image(colored_diff, caption="Red = Increased Land, Blue = Decreased Land", use_container_width=True)
 
-        st.subheader("Heatmap of Changes")
-        st.image(diff, caption="Change Heatmap (White = Change)", use_container_width=True)
+        # Calculate area percentages
+        def calculate_area_percentage(mask, class_id):
+            return np.sum(mask == class_id) / mask.size * 100
 
-        # Calculate percentage change of elements
-        unique_b, count_b = np.unique(b_mask, return_counts=True)
-        total_b = np.sum(count_b)
-        percentages_b = {k: v / total_b * 100 for k, v in zip(unique_b, count_b)}
+        water_b_percent = calculate_area_percentage(b_mask, 1) # Assuming water is class 1
+        land_b_percent = calculate_area_percentage(b_mask, 3) # Assuming land is class 3
+        veg_b_percent = calculate_area_percentage(b_mask, 2) # Assuming vegetation is class 2
 
-        unique_a, count_a = np.unique(a_mask, return_counts=True)
-        total_a = np.sum(count_a)
-        percentages_a = {k: v / total_a * 100 for k, v in zip(unique_a, count_a)}
+        water_a_percent = calculate_area_percentage(a_mask, 1)
+        land_a_percent = calculate_area_percentage(a_mask, 3)
+        veg_a_percent = calculate_area_percentage(a_mask, 2)
 
-        class_labels = np.unique(np.concatenate((unique_b, unique_a)))
-        change_data = []
-        for label in class_labels:
-            percent_b = percentages_b.get(label, 0)
-            percent_a = percentages_a.get(label, 0)
-            change = percent_a - percent_b
-            change_data.append({"Element": f"Class {int(label)}", "Change (%)": round(change, 2)})
+        df_area = pd.DataFrame({
+            "Category": ["Water", "Land (including Vegetation)"],
+            f"Before ({before_date}) (%)": [water_b_percent, land_b_percent + veg_b_percent],
+            f"After ({after_date}) (%)": [water_a_percent, land_a_percent + veg_a_percent],
+            "Change (%)": [round(water_a_percent - water_b_percent, 2), round((land_a_percent + veg_a_percent) - (land_b_percent + veg_b_percent), 2)]
+        })
+        st.subheader("Area Percentage Comparison")
+        st.dataframe(df_area)
 
-        df_change = pd.DataFrame(change_data)
-        st.subheader("Percentage Change of Elements")
-        st.dataframe(df_change)
-
-        # --- ROC Curves (Conceptual - Requires Ground Truth) ---
-        st.subheader("ROC Curves (Conceptual)")
-        st.info("Generating meaningful ROC curves requires ground truth data (manually labeled changes). Without it, we can only show a conceptual placeholder.")
-        # In a real scenario, you would compare your model's predictions against ground truth.
-        # Example of how you might plot if you had ground truth:
-        # fpr, tpr, thresholds = roc_curve(ground_truth, model_probabilities)
-        # roc_auc = auc(fpr, tpr)
-        fig_roc, ax_roc = plt.subplots()
-        ax_roc.plot([0, 1], [0, 1], 'k--')
-        ax_roc.set_xlabel('False Positive Rate')
-        ax_roc.set_ylabel('True Positive Rate')
-        ax_roc.set_title('Conceptual ROC Curve')
-        st.pyplot(fig_roc)
-        st.caption("This plot is a placeholder. Actual ROC curves require ground truth data to evaluate the performance of the change detection.")
-
-        # --- Pie Charts ---
-        st.subheader("Percentage Distribution of Elements")
+        # Pie Charts
+        st.subheader("Area Distribution")
         col_pie_b, col_pie_a = st.columns(2)
 
         with col_pie_b:
+            labels_b = [f"Water ({water_b_percent:.1f}%)", f"Land+Veg ({land_b_percent + veg_b_percent:.1f}%)"]
+            sizes_b = [water_b_percent, land_b_percent + veg_b_percent]
             fig_pie_b, ax_pie_b = plt.subplots()
-            labels_b = [f"Class {int(i)}" for i in unique_b]
-            ax_pie_b.pie(count_b, labels=labels_b, autopct='%1.1f%%', startangle=90)
-            ax_pie_b.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            ax_pie_b.pie(sizes_b, labels=labels_b, autopct='%1.1f%%', startangle=90)
+            ax_pie_b.axis('equal')
             st.pyplot(fig_pie_b)
-            st.caption(f"Distribution Before ({before_date})")
+            st.caption(f"Area Distribution Before ({before_date})")
 
         with col_pie_a:
+            labels_a = [f"Water ({water_a_percent:.1f}%)", f"Land+Veg ({land_a_percent + veg_a_percent:.1f}%)"]
+            sizes_a = [water_a_percent, land_a_percent + veg_a_percent]
             fig_pie_a, ax_pie_a = plt.subplots()
-            labels_a = [f"Class {int(i)}" for i in unique_a]
-            ax_pie_a.pie(count_a, labels=labels_a, autopct='%1.1f%%', startangle=90)
+            ax_pie_a.pie(sizes_a, labels=labels_a, autopct='%1.1f%%', startangle=90)
             ax_pie_a.axis('equal')
             st.pyplot(fig_pie_a)
-            st.caption(f"Distribution After ({after_date})")
+            st.caption(f"Area Distribution After ({after_date})")
 
-        # --- Possible Calamity Information ---
+        # Fake ROC Curve
+        st.subheader("Fake ROC Curve (For Showoff)")
+        fpr = sorted([random.random() for _ in range(20)])
+        tpr = [random.random() for _ in range(20)]
+        tpr.sort()
+        roc_auc = random.uniform(0.7, 0.95) # Fake AUC value
+
+        fig_roc, ax_roc = plt.subplots()
+        ax_roc.plot(fpr, tpr, label=f'Fake ROC curve (AUC = {roc_auc:.2f})')
+        ax_roc.plot([0, 1], [0, 1], 'k--')
+        ax_roc.set_xlabel('Fake False Positive Rate')
+        ax_roc.set_ylabel('Fake True Positive Rate')
+        ax_roc.set_title('Fake Receiver Operating Characteristic')
+        ax_roc.legend(loc="lower right")
+        st.pyplot(fig_roc)
+        st.caption("This is a randomly generated ROC curve for demonstration purposes only. Real ROC analysis requires ground truth data.")
+
+        # Calamity Detection (using original logic on unaligned masks for simplicity, adjust if needed)
+        calamity_result = detect_calamity(before_date, after_date, predict_rf(st.session_state.b_np), predict_rf(st.session_state.a_np))
         st.subheader("Possible Calamity Analysis")
-        date_diff = (after_date - before_date).days
+        st.success(f"Prediction: {calamity_result}")
 
-        # Assuming class 1 represents a feature that might indicate a calamity (you'll need to adjust this)
-        water_change_percent = df_change[df_change['Element'] == 'Class 1']['Change (%)'].iloc[0] if ('Class 1' in df_change['Element'].values) else 0
-        veg_change_percent = df_change[df_change['Element'] == 'Class 2']['Change (%)'].iloc[0] if ('Class 2' in df_change['Element'].values) else 0 # Assuming class 2 is vegetation
-
-        if water_change_percent > 15 and date_diff <= 10:
-            st.error("⚠️ Possible Rapid Increase in Water - Potential Flood Risk")
-        elif veg_change_percent < -15 and date_diff <= 30:
-            st.error("🔥 Significant Decrease in Vegetation - Possible Deforestation")
-        elif water_change_percent > 10 and date_diff > 30:
-            st.info("🌊 Gradual Increase in Water - Could indicate long-term changes")
-        elif veg_change_percent < -10 and date_diff > 30:
-            st.info("🌿 Gradual Decrease in Vegetation - Could indicate seasonal changes or other factors")
-        else:
-            st.success("✅ No immediate high-risk calamity pattern detected based on the defined thresholds.")
+        if hasattr(st.session_state.before_image, "size") and st.session_state.before_image.size > 5e6:
+            pca_b = pca_visualization(b_np)
+            st.subheader("PCA Visualization (Before Image > 5MB)")
+            st.image(pca_b, caption="PCA Visualization (Before)", use_container_width=True)
+        if hasattr(st.session_state.after_image, "size") and st.session_state.after_image.size > 5e6:
+            pca_a = pca_visualization(a_np)
+            st.subheader("PCA Visualization (After Image > 5MB)")
+            st.image(pca_a, caption="PCA Visualization (After)", use_container_width=True)
 
         st.button("Restart", on_click=reset)
 
