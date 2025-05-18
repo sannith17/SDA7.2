@@ -1,252 +1,201 @@
+
+
 import streamlit as st
 import numpy as np
 import pandas as pd
 import cv2
-from PIL import Image
-import joblib
+import datetime
 import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import PCA
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
 import tensorflow as tf
-from datetime import datetime
-from sklearn.metrics import roc_curve, auc  # For ROC curve (requires ground truth)
+import joblib
+from skimage.registration import phase_cross_correlation
 
-st.set_page_config(layout="wide")
+# Set page
+st.set_page_config(page_title="🌍 Satellite Image Calamity Detector", layout="wide")
+st.title("🌍 Satellite Image Calamity Detector")
 
-# --- Load Models with Caching ---
-@st.cache_resource
-def load_models():
-    """Loads the CNN and Random Forest models with caching."""
-    cnn_model = None
-    rf_model = None
-    try:
-        cnn_model = tf.keras.models.load_model("cnn_model.h5")
-        st.info("CNN model loaded successfully!")
-    except Exception as e:
-        st.warning(f"Could not load CNN model: {e}")
+# Sidebar
+st.sidebar.title("Upload Images")
+before_image_file = st.sidebar.file_uploader("Upload BEFORE image", type=["jpg", "jpeg", "png"])
+after_image_file = st.sidebar.file_uploader("Upload AFTER image", type=["jpg", "jpeg", "png"])
 
-    try:
-        rf_model = joblib.load("rf_model.pkl")
-        st.info("Random Forest model loaded successfully!")
-    except Exception as e:
-        st.warning(f"Could not load RF model: {e}")
+before_date = st.sidebar.date_input("Before Date", value=datetime.date(2022, 1, 1))
+after_date = st.sidebar.date_input("After Date", value=datetime.date(2024, 1, 1))
 
-    return cnn_model, rf_model
+# Load models
+cnn_model = None
+rf_model = None
+try:
+    cnn_model = tf.keras.models.load_model("cnn_model.h5")
+except Exception as e:
+    st.warning(f"CNN model not found: {e}")
 
-cnn_model, rf_model = load_models()
+try:
+    rf_model = joblib.load("rf_model.pkl")
+except Exception as e:
+    st.warning(f"Random Forest model not found: {e}")
 
-# --- Session State Setup ---
-if 'page' not in st.session_state:
-    st.session_state.page = 1
-if 'analysis_type' not in st.session_state:
-    st.session_state.analysis_type = None
-
-# --- Navigation Functions ---
-def next_page():
-    """Advances to the next page in the app."""
-    st.session_state.page += 1
-
-def reset():
-    """Resets the app to the first page."""
-    st.session_state.page = 1
-
-# --- Image Preprocessing ---
+# Load and preprocess image
 def load_and_preprocess(image_file):
-    """Loads and preprocesses the uploaded image, ensuring it's in RGB format."""
-    image = Image.open(image_file).convert("RGB")
-    image_np = np.array(image)
-    return image_np
+    if image_file is not None:
+        img_bytes = image_file.read()
+        img_np = np.frombuffer(img_bytes, np.uint8)
+        img = cv2.imdecode(img_np, cv2.IMREAD_COLOR)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return img
+    return None
 
-# --- PCA Visualization ---
-def pca_visualization(image_np):
-    """Performs PCA on the image for visualization."""
-    img_resized = cv2.resize(image_np, (128, 128))
-    pixels = img_resized.reshape(-1, 3)
-    pca = PCA(n_components=3)
-    scaled = StandardScaler().fit_transform(pixels)
-    pca_img = pca.fit_transform(scaled)
-    pca_img = pca_img.reshape(128, 128, 3)
-    pca_img = (pca_img - pca_img.min()) / (pca_img.max() - pca_img.min())
-    return pca_img
+# Image Alignment and Cropping
+def align_and_crop_images(before_img, after_img):
+    if before_img is None or after_img is None:
+        return None, None
+    before_gray = cv2.cvtColor(before_img, cv2.COLOR_RGB2GRAY)
+    after_gray = cv2.cvtColor(after_img, cv2.COLOR_RGB2GRAY)
 
-# --- Random Forest Prediction ---
-def predict_rf(image_np):
-    """Predicts segmentation mask using the Random Forest model."""
-    img_resized = cv2.resize(image_np, (128, 128))
-    pixels = img_resized.reshape(-1, 3)
-    prediction = rf_model.predict(pixels)
-    segmented_img = prediction.reshape(128, 128)
-    return segmented_img
+    try:
+        # Resize after_gray to match before_gray shape for alignment
+        after_gray_resized = cv2.resize(after_gray, (before_gray.shape[1], before_gray.shape[0]))
+        shifted, error, diffphase = phase_cross_correlation(before_gray, after_gray_resized)
+        shift_y, shift_x = -shifted
 
-# --- CNN Prediction (Currently Not Directly Used in the Flow) ---
-def predict_cnn(image_np):
-    """Predicts using the CNN model."""
-    img_resized = cv2.resize(image_np, (128, 128)) / 255.0
-    input_array = np.expand_dims(img_resized, axis=0)
-    predictions = cnn_model.predict(input_array)
-    return predictions
+        translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        aligned_after = cv2.warpAffine(after_img, translation_matrix, (after_img.shape[1], after_img.shape[0]))
 
-# --- Difference Map ---
-def difference_heatmap(before_mask, after_mask):
-    """Generates a heatmap showing the difference between two masks."""
-    diff = after_mask != before_mask
-    return diff.astype(np.uint8) * 255
+        # Determine cropping window
+        h1, w1 = before_img.shape[:2]
+        h2, w2 = aligned_after.shape[:2]
+        x1 = max(0, int(shift_x))
+        y1 = max(0, int(shift_y))
+        x2 = min(w1, int(w2 + shift_x))
+        y2 = min(h1, int(h2 + shift_y))
 
-# --- Calamity Detection ---
-def detect_calamity(date1, date2, mask1, mask2):
-    """Detects potential calamities based on changes in the segmentation masks."""
-    diff_mask = mask2 != mask1
-    change_percentage = np.sum(diff_mask) / diff_mask.size
-    date_diff = (date2 - date1).days
+        cropped_before = before_img[y1:y2, x1:x2]
+        cropped_after = aligned_after[y1 - int(shift_y):y2 - int(shift_y), x1 - int(shift_x):x2 - int(shift_x)]
 
-    if change_percentage > 0.15:
-        if date_diff <= 10:
-            return "⚠️ Possible Flood (Rapid Change)"
-        elif date_diff <= 30:
-            return "🔥 Possible Deforestation (Significant Change Over Short Term)"
-        else:
-            return "🌊 Urbanization or Seasonal Change (Gradual, Significant Change)"
-    return "✅ No Significant Calamity Detected"
+        return cropped_before, cropped_after
+    except Exception as e:
+        st.warning(f"Image alignment failed: {e}. Proceeding with original images.")
+        return before_img, after_img
 
-# --- Layout Pages ---
-if st.session_state.page == 1:
-    st.title("🌍 Satellite Image Calamity Detector")
-    st.subheader("Step 1: Choose Analysis Type")
-    st.session_state.analysis_type = st.radio("Select Type of Analysis:", ["Land Body", "Water Body"])
-    st.button("Next", on_click=next_page)
+# Function to generate colored change map
+def generate_colored_change_map(before, after):
+    if before is None or after is None:
+        return None
+    before_resized = cv2.resize(before, (128, 128))
+    after_resized = cv2.resize(after, (128, 128))
+    diff = cv2.absdiff(before_resized, after_resized)
+    mask = cv2.cvtColor(diff, cv2.COLOR_RGB2GRAY)
+    colored_change = np.zeros_like(before_resized)
+    colored_change[mask > 20] = [255, 0, 0]  # Red for significant change
+    return colored_change
 
-elif st.session_state.page == 2:
-    st.title("Step 2: Upload Satellite Images")
-    col1, col2 = st.columns(2)
-    with col1:
-        before_image = st.file_uploader("Upload BEFORE image", type=['jpg', 'jpeg', 'png'], key="before")
-        before_date = st.date_input("Before Date")
-    with col2:
-        after_image = st.file_uploader("Upload AFTER image", type=['jpg', 'jpeg', 'png'], key="after")
-        after_date = st.date_input("After Date")
+# Function to predict masks (simplified for visualization)
+def predict_masks_simple(img):
+    if img is None:
+        return None
+    img_resized = cv2.resize(img, (64, 64))
+    # Simple thresholding for demonstration (replace with actual model prediction)
+    gray = cv2.cvtColor(img_resized, cv2.COLOR_RGB2GRAY)
+    water_mask = (gray < 100).astype(np.uint8) * 255
+    land_mask = ((gray >= 100) & (gray < 200)).astype(np.uint8) * 255
+    veg_mask = (gray >= 200).astype(np.uint8) * 255
+    return water_mask, land_mask, veg_mask
 
-    if before_image and after_image:
-        st.session_state.before_image = before_image
-        st.session_state.after_image = after_image
-        st.session_state.before_date = before_date
-        st.session_state.after_date = after_date
-        st.button("Next", on_click=next_page)
-    elif before_image or after_image:
-        st.warning("Please upload both 'BEFORE' and 'AFTER' images.")
-    else:
-        st.info("Please upload satellite images for analysis.")
+# Function to calculate area percentages
+def calculate_area_percentage(mask):
+    if mask is None:
+        return 0
+    return np.sum(mask > 0) / mask.size * 100
 
-elif st.session_state.page == 3:
-    st.title("Step 3: Image Preview")
-    if 'before_image' in st.session_state and 'after_image' in st.session_state:
-        b_img_np = load_and_preprocess(st.session_state.before_image)
-        a_img_np = load_and_preprocess(st.session_state.after_image)
+# Main workflow
+if before_image_file and after_image_file:
+    before_img = load_and_preprocess(before_image_file)
+    after_img = load_and_preprocess(after_image_file)
+
+    if before_img is not None and after_img is not None:
+        aligned_before, aligned_after = align_and_crop_images(before_img, after_img)
 
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader(f"Before Image ({st.session_state.before_date})")
-            st.image(b_img_np, use_column_width=True)
+            st.subheader(f"Before Image ({before_date})")
+            st.image(aligned_before, use_column_width=True)
         with col2:
-            st.subheader(f"After Image ({st.session_state.after_date})")
-            st.image(a_img_np, use_column_width=True)
+            st.subheader(f"After Image ({after_date})")
+            st.image(aligned_after, use_column_width=True)
 
-        st.session_state.b_np = b_img_np
-        st.session_state.a_np = a_img_np
-        st.button("Next", on_click=next_page)
-    else:
-        st.warning("Please upload images in the previous step.")
+        change_map = generate_colored_change_map(aligned_before, aligned_after)
+        if change_map is not None:
+            st.subheader("Change Detection (Red = Significant Change)")
+            st.image(change_map, use_column_width=True)
+        else:
+            st.warning("Could not generate change map.")
 
-elif st.session_state.page == 4:
-    st.title("Step 4: Calamity Detection and Visualization")
-    if 'b_np' in st.session_state and 'a_np' in st.session_state and rf_model is not None:
-        b_np = st.session_state.b_np
-        a_np = st.session_state.a_np
-        before_date = st.session_state.before_date
-        after_date = st.session_state.after_date
+        before_water, before_land, before_veg = predict_masks_simple(aligned_before)
+        after_water, after_land, after_veg = predict_masks_simple(aligned_after)
 
-        progress_bar = st.progress(0.0, "Processing Images...")
+        before_water_percent = calculate_area_percentage(before_water)
+        before_land_percent = calculate_area_percentage(before_land)
+        before_veg_percent = calculate_area_percentage(before_veg)
 
-        # Predict segmentation masks
-        b_mask = predict_rf(b_np)
-        progress_bar.progress(0.33, "Generating Before Mask...")
-        a_mask = predict_rf(a_np)
-        progress_bar.progress(0.66, "Generating After Mask...")
+        after_water_percent = calculate_area_percentage(after_water)
+        after_land_percent = calculate_area_percentage(after_land)
+        after_veg_percent = calculate_area_percentage(after_veg)
 
-        # Generate difference heatmap
-        diff = difference_heatmap(b_mask, a_mask)
-        progress_bar.progress(1.0, "Analysis Complete!")
-        progress_bar.empty()
+        area_data = pd.DataFrame({
+            "Category": ["Water", "Land", "Vegetation"],
+            f"Before ({before_date}) (%)": [before_water_percent, before_land_percent, before_veg_percent],
+            f"After ({after_date}) (%)": [after_water_percent, after_land_percent, after_veg_percent],
+            "Change (%)": [round(after_water_percent - before_water_percent, 2),
+                           round(after_land_percent - before_land_percent, 2),
+                           round(after_veg_percent - before_veg_percent, 2)]
+        })
+        st.subheader("Area Percentage Comparison")
+        st.dataframe(area_data)
 
-        st.subheader("Change Detection")
-        col_masks = st.columns(2)
-        with col_masks[0]:
-            st.image(b_mask, caption=f"RF Mask - Before ({before_date})", use_column_width=True)
-        with col_masks[1]:
-            st.image(a_mask, caption=f"RF Mask - After ({after_date})", use_column_width=True)
-        st.image(diff, caption="Change Heatmap (White = Change)", use_column_width=True)
+        # Pie Charts
+        st.subheader("Area Distribution")
+        col_pie_b, col_pie_a = st.columns(2)
 
-        # Calculate percentage change of elements
-        unique_b, count_b = np.unique(b_mask, return_counts=True)
-        total_b = np.sum(count_b)
-        percentages_b = {k: v / total_b * 100 for k, v in zip(unique_b, count_b)}
-
-        unique_a, count_a = np.unique(a_mask, return_counts=True)
-        total_a = np.sum(count_a)
-        percentages_a = {k: v / total_a * 100 for k, v in zip(unique_a, count_a)}
-
-        class_labels = np.unique(np.concatenate((unique_b, unique_a)))
-        change_data = []
-        for label in class_labels:
-            percent_b = percentages_b.get(label, 0)
-            percent_a = percentages_a.get(label, 0)
-            change = percent_a - percent_b
-            change_data.append({"Element": f"Class {int(label)}", "Change (%)": round(change, 2)})
-
-        df_change = pd.DataFrame(change_data)
-        st.subheader("Percentage Change of Elements")
-        st.dataframe(df_change)
-
-        # --- Pie Charts ---
-        st.subheader("Percentage Distribution of Elements")
-        col_pie = st.columns(2)
-
-        with col_pie[0]:
+        with col_pie_b:
+            labels_b = [f"Water ({before_water_percent:.1f}%)",
+                        f"Land ({before_land_percent:.1f}%)",
+                        f"Vegetation ({before_veg_percent:.1f}%)"]
+            sizes_b = [before_water_percent, before_land_percent, before_veg_percent]
             fig_pie_b, ax_pie_b = plt.subplots()
-            labels_b = [f"Class {int(i)}" for i in unique_b]
-            ax_pie_b.pie(count_b, labels=labels_b, autopct='%1.1f%%', startangle=90)
-            ax_pie_b.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            ax_pie_b.pie(sizes_b, labels=labels_b, autopct='%1.1f%%', startangle=90)
+            ax_pie_b.axis('equal')
             st.pyplot(fig_pie_b)
-            st.caption(f"Distribution Before ({before_date})")
+            st.caption(f"Area Distribution Before ({before_date})")
 
-        with col_pie[1]:
+        with col_pie_a:
+            labels_a = [f"Water ({after_water_percent:.1f}%)",
+                        f"Land ({after_land_percent:.1f}%)",
+                        f"Vegetation ({after_veg_percent:.1f}%)"]
+            sizes_a = [after_water_percent, after_land_percent, after_veg_percent]
             fig_pie_a, ax_pie_a = plt.subplots()
-            labels_a = [f"Class {int(i)}" for i in unique_a]
-            ax_pie_a.pie(count_a, labels=labels_a, autopct='%1.1f%%', startangle=90)
+            ax_pie_a.pie(sizes_a, labels=labels_a, autopct='%1.1f%%', startangle=90)
             ax_pie_a.axis('equal')
             st.pyplot(fig_pie_a)
-            st.caption(f"Distribution After ({after_date})")
+            st.caption(f"Area Distribution After ({after_date})")
 
-        # --- Possible Calamity Information ---
-        st.subheader("Possible Calamity Analysis")
+        # Calamity Alerts (simplified based on area change)
+        st.subheader("🛰️ Possible Changes Detected")
+        water_change = after_water_percent - before_water_percent
+        veg_change = after_veg_percent - before_veg_percent
         date_diff = (after_date - before_date).days
 
-        # Assuming class 1 represents a feature that might indicate a calamity (you'll need to adjust this)
-        water_change_percent = df_change[df_change['Element'] == 'Class 1']['Change (%)'].iloc[0] if ('Class 1' in df_change['Element'].values) else 0
-        veg_change_percent = df_change[df_change['Element'] == 'Class 2']['Change (%)'].iloc[0] if ('Class 2' in df_change['Element'].values) else 0 # Assuming class 2 is vegetation
-
-        if water_change_percent > 15 and date_diff <= 10:
-            st.error("⚠️ Possible Rapid Increase in Water - Potential Flood Risk")
-        elif veg_change_percent < -15 and date_diff <= 30:
-            st.error("🔥 Significant Decrease in Vegetation - Possible Deforestation")
-        elif water_change_percent > 10 and date_diff > 30:
-            st.info("🌊 Gradual Increase in Water - Could indicate long-term changes")
-        elif veg_change_percent < -10 and date_diff > 30:
-            st.info("🌿 Gradual Decrease in Vegetation - Could indicate seasonal changes or other factors")
+        if water_change > 5 and date_diff <= 10:
+            st.error("⚠️ Rapid Increase in Water Area Possible Flood")
+        elif veg_change < -5 and date_diff <= 30:
+            st.error("🔥 Significant Decrease in Vegetation Possible Deforestation")
+        elif water_change < -5 and date_diff <= 10:
+            st.warning("💧 Rapid Decrease in Water Area")
+        elif veg_change > 5 and date_diff <= 30:
+            st.info("🌳 Significant Increase in Vegetation")
         else:
-            st.success("✅ No immediate high-risk calamity pattern detected based on the defined thresholds.")
+            st.success("✅ No significant rapid changes detected based on area analysis.")
 
-        st.button("Restart", on_click=reset)
-
-    else:
-        st.warning("Please upload both BEFORE and AFTER images on the previous page, and ensure the model is loaded.")
+else:
+    st.info("Please upload both BEFORE and AFTER satellite images and select dates.")
