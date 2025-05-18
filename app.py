@@ -10,6 +10,7 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import tensorflow as tf
 from datetime import datetime
+from sklearn.metrics import roc_curve, auc  # For ROC curve (requires ground truth)
 
 st.set_page_config(layout="wide")
 
@@ -52,6 +53,7 @@ def reset():
 
 # --- Image Preprocessing ---
 def load_and_preprocess(image_file):
+    """Loads and preprocesses the uploaded image, ensuring it's in RGB format."""
     image = Image.open(image_file).convert("RGB")
     image_np = np.array(image)
     return image_np
@@ -155,74 +157,110 @@ elif st.session_state.page == 3:
 
 elif st.session_state.page == 4:
     st.title("Step 4: Calamity Detection and Visualization")
-    if 'b_np' in st.session_state and 'a_np' in st.session_state:
+    if 'b_np' in st.session_state and 'a_np' in st.session_state and rf_model is not None:
         b_np = st.session_state.b_np
         a_np = st.session_state.a_np
         before_date = st.session_state.before_date
         after_date = st.session_state.after_date
 
-        if cnn_model and rf_model:
-            progress_bar = st.progress(0.0, "Processing Images...")
+        progress_bar = st.progress(0.0, "Processing Images...")
 
-            # Predict segmentation masks
-            b_mask = predict_rf(b_np)
-            progress_bar.progress(0.33, "Generating Before Mask...")
-            a_mask = predict_rf(a_np)
-            progress_bar.progress(0.66, "Generating After Mask...")
+        # Predict segmentation masks
+        b_mask = predict_rf(b_np)
+        progress_bar.progress(0.33, "Generating Before Mask...")
+        a_mask = predict_rf(a_np)
+        progress_bar.progress(0.66, "Generating After Mask...")
 
-            # Generate difference heatmap and detect calamity
-            diff = difference_heatmap(b_mask, a_mask)
-            calamity_result = detect_calamity(before_date, after_date, b_mask, a_mask)
-            progress_bar.progress(1.0, "Analysis Complete!")
-            progress_bar.empty()
+        # Generate difference heatmap
+        diff = difference_heatmap(b_mask, a_mask)
+        progress_bar.progress(1.0, "Analysis Complete!")
+        progress_bar.empty()
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.image(b_mask, caption=f"Random Forest - Before Mask ({before_date})")
-            with col2:
-                st.image(a_mask, caption=f"Random Forest - After Mask ({after_date})")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(b_mask, caption=f"Random Forest - Before Mask ({before_date})")
+        with col2:
+            st.image(a_mask, caption=f"Random Forest - After Mask ({after_date})")
 
-            st.subheader("Heatmap of Changes")
-            st.image(diff, caption="Change Heatmap", use_container_width=True)
+        st.subheader("Heatmap of Changes")
+        st.image(diff, caption="Change Heatmap (White = Change)", use_container_width=True)
 
-            unique_b, count_b = np.unique(b_mask, return_counts=True)
-            unique_a, count_a = np.unique(a_mask, return_counts=True)
+        # Calculate percentage change of elements
+        unique_b, count_b = np.unique(b_mask, return_counts=True)
+        total_b = np.sum(count_b)
+        percentages_b = {k: v / total_b * 100 for k, v in zip(unique_b, count_b)}
 
-            # Ensure count_a has enough elements
-            after_percentages = []
-            for i, element in enumerate(unique_b):
-                if element in unique_a:
-                    index_a = np.where(unique_a == element)[0][0]
-                    after_percentages.append(round((count_a[index_a] / np.sum(count_a)) * 100, 2))
-                else:
-                    after_percentages.append(0.0)
+        unique_a, count_a = np.unique(a_mask, return_counts=True)
+        total_a = np.sum(count_a)
+        percentages_a = {k: v / total_a * 100 for k, v in zip(unique_a, count_a)}
 
-            df = pd.DataFrame({
-                "Element": [f"Class {i}" for i in unique_b],
-                "Before %": [round((c / np.sum(count_b)) * 100, 2) for c in count_b],
-                "After %": after_percentages
-            })
-            st.subheader("Class Distribution")
-            st.dataframe(df)
+        class_labels = np.unique(np.concatenate((unique_b, unique_a)))
+        change_data = []
+        for label in class_labels:
+            percent_b = percentages_b.get(label, 0)
+            percent_a = percentages_a.get(label, 0)
+            change = percent_a - percent_b
+            change_data.append({"Element": f"Class {int(label)}", "Change (%)": round(change, 2)})
 
-            fig1, ax1 = plt.subplots()
-            ax1.pie(df["After %"], labels=df["Element"], autopct='%1.1f%%')
-            st.pyplot(fig1, use_container_width=True)
+        df_change = pd.DataFrame(change_data)
+        st.subheader("Percentage Change of Elements")
+        st.dataframe(df_change)
 
-            st.success(f"Prediction: {calamity_result}")
+        # --- ROC Curves (Conceptual - Requires Ground Truth) ---
+        st.subheader("ROC Curves (Conceptual)")
+        st.info("Generating meaningful ROC curves requires ground truth data (manually labeled changes). Without it, we can only show a conceptual placeholder.")
+        # In a real scenario, you would compare your model's predictions against ground truth.
+        # Example of how you might plot if you had ground truth:
+        # fpr, tpr, thresholds = roc_curve(ground_truth, model_probabilities)
+        # roc_auc = auc(fpr, tpr)
+        fig_roc, ax_roc = plt.subplots()
+        ax_roc.plot([0, 1], [0, 1], 'k--')
+        ax_roc.set_xlabel('False Positive Rate')
+        ax_roc.set_ylabel('True Positive Rate')
+        ax_roc.set_title('Conceptual ROC Curve')
+        st.pyplot(fig_roc)
+        st.caption("This plot is a placeholder. Actual ROC curves require ground truth data to evaluate the performance of the change detection.")
 
-            if hasattr(st.session_state.before_image, "size") and st.session_state.before_image.size > 5e6:
-                pca_b = pca_visualization(b_np)
-                st.subheader("PCA Visualization (Before Image > 5MB)")
-                st.image(pca_b, caption="PCA Visualization (Before)", use_container_width=True)
-            if hasattr(st.session_state.after_image, "size") and st.session_state.after_image.size > 5e6:
-                pca_a = pca_visualization(a_np)
-                st.subheader("PCA Visualization (After Image > 5MB)")
-                st.image(pca_a, caption="PCA Visualization (After)", use_container_width=True)
+        # --- Pie Charts ---
+        st.subheader("Percentage Distribution of Elements")
+        col_pie_b, col_pie_a = st.columns(2)
 
+        with col_pie_b:
+            fig_pie_b, ax_pie_b = plt.subplots()
+            labels_b = [f"Class {int(i)}" for i in unique_b]
+            ax_pie_b.pie(count_b, labels=labels_b, autopct='%1.1f%%', startangle=90)
+            ax_pie_b.axis('equal')  # Equal aspect ratio ensures that pie is drawn as a circle.
+            st.pyplot(fig_pie_b)
+            st.caption(f"Distribution Before ({before_date})")
+
+        with col_pie_a:
+            fig_pie_a, ax_pie_a = plt.subplots()
+            labels_a = [f"Class {int(i)}" for i in unique_a]
+            ax_pie_a.pie(count_a, labels=labels_a, autopct='%1.1f%%', startangle=90)
+            ax_pie_a.axis('equal')
+            st.pyplot(fig_pie_a)
+            st.caption(f"Distribution After ({after_date})")
+
+        # --- Possible Calamity Information ---
+        st.subheader("Possible Calamity Analysis")
+        date_diff = (after_date - before_date).days
+
+        # Assuming class 1 represents a feature that might indicate a calamity (you'll need to adjust this)
+        water_change_percent = df_change[df_change['Element'] == 'Class 1']['Change (%)'].iloc[0] if ('Class 1' in df_change['Element'].values) else 0
+        veg_change_percent = df_change[df_change['Element'] == 'Class 2']['Change (%)'].iloc[0] if ('Class 2' in df_change['Element'].values) else 0 # Assuming class 2 is vegetation
+
+        if water_change_percent > 15 and date_diff <= 10:
+            st.error("⚠️ Possible Rapid Increase in Water - Potential Flood Risk")
+        elif veg_change_percent < -15 and date_diff <= 30:
+            st.error("🔥 Significant Decrease in Vegetation - Possible Deforestation")
+        elif water_change_percent > 10 and date_diff > 30:
+            st.info("🌊 Gradual Increase in Water - Could indicate long-term changes")
+        elif veg_change_percent < -10 and date_diff > 30:
+            st.info("🌿 Gradual Decrease in Vegetation - Could indicate seasonal changes or other factors")
         else:
-            st.error("Models not found. Please ensure 'cnn_model.h5' and 'rf_model.pkl' are in the same directory as your script.")
+            st.success("✅ No immediate high-risk calamity pattern detected based on the defined thresholds.")
 
         st.button("Restart", on_click=reset)
+
     else:
-        st.warning("Please upload images in the previous steps.")
+        st.warning("Please upload both BEFORE and AFTER images on the previous page, and ensure the model is loaded.")
