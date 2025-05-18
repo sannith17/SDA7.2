@@ -7,3 +7,5 @@ scikit-learn
 tensorflow
 joblib
 matplotlib
+scikit-image
+scipy
