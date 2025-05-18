@@ -269,7 +269,7 @@ elif st.session_state.page == 4:
             col7, col8, col9 = st.columns(3)
             with col7:
                 st.metric("Total Area Changed", 
-                         f"{(np.sum(diff > 0) / total_pixels * 100:.2f}%",
+                         f"{(np.sum(diff > 0) / total_pixels * 100):.2f}%",
                          delta=f"{np.sum(diff > 0)} pixels")
             with col8:
                 most_increased = df.loc[df['Change (%)'].str.replace('+', '').astype(float).idxmax()]
@@ -284,7 +284,7 @@ elif st.session_state.page == 4:
 
             # Interactive Data Display
             st.dataframe(
-                df.style.apply(lambda x: [f"background-color: {x['Color']}" for _ in x], axis=1)
+                df.style.apply(lambda x: [f"background-color: {x['Color']}" for _ in x], axis=1))
             
             # Temporal Analysis
             st.subheader("Temporal Distribution Changes")
