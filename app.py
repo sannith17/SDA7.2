@@ -65,32 +65,37 @@ def load_and_preprocess(image_file):
     return image_np
 
 # --- Image Alignment and Cropping ---
+# --- Image Alignment and Cropping ---
 def align_and_crop_images(before_np, after_np):
     """Aligns and crops two images to their overlapping region."""
     before_gray = cv2.cvtColor(before_np, cv2.COLOR_RGB2GRAY)
     after_gray = cv2.cvtColor(after_np, cv2.COLOR_RGB2GRAY)
 
+    # Resize 'after_gray' to match the shape of 'before_gray'
+    after_gray_resized = cv2.resize(after_gray, (before_gray.shape[:2][::-1])) # Corrected resizing order
+
     # Perform phase cross-correlation for subpixel alignment
-    shifted, error, diffphase = phase_cross_correlation(before_gray, after_gray)
-    shift_y, shift_x = -shifted
+    try:
+        shifted, error, diffphase = phase_cross_correlation(before_gray, after_gray_resized)
+        shift_y, shift_x = -shifted
 
-    # Apply the shift to the 'after' image
-    translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-    aligned_after = cv2.warpAffine(after_np, translation_matrix, (after_np.shape[1], after_np.shape[0]))
+        # Apply the shift to the 'after' color image
+        translation_matrix = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        aligned_after = cv2.warpAffine(after_np, translation_matrix, (after_np.shape[:2][::-1])) # Corrected warping size
 
-    # Determine the cropping window
-    h1, w1 = before_np.shape[:2]
-    h2, w2 = aligned_after.shape[:2]
+        # Determine the cropping window
+        h1, w1 = before_np.shape[:2]
+        h2, w2 = aligned_after.shape[:2]
 
-    x1 = max(0, int(shift_x))
-    y1 = max(0, int(shift_y))
-    x2 = min(w1, int(w2 + shift_x))
-    y2 = min(h1, int(h2 + shift_y))
+        x1 = max(0, int(shift_x))
+        y1 = max(0, int(shift_y))
+        x2 = min(w1, int(w2 + shift_x))
+        y2 = min(h1, int(h2 + shift_y))
 
-    cropped_before = before_np[y1:y2, x1:x2]
-    cropped_after = aligned_after[y1 - int(shift_y):y2 - int(shift_y), x1 - int(shift_x):x2 - int(shift_x)]
+        cropped_before = before_np[:y2, :x2] # Cropping based on calculated overlap
+        cropped_after = aligned_after[:y2 - int(shift_y), :x2 - int(shift_x)] # Cropping aligned image
 
-    return cropped_before, cropped_after
+        return cropped
 
 # --- Random Forest Prediction ---
 def predict_rf(image_np):
