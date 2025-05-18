@@ -52,8 +52,7 @@ def reset():
 
 # --- Image Preprocessing ---
 def load_and_preprocess(image_file):
-    """Loads and preprocesses the uploaded image."""
-    image = Image.open(image_file)
+    image = Image.open(image_file).convert("RGB")
     image_np = np.array(image)
     return image_np
 
