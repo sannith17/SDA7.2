@@ -5,7 +5,7 @@ import cv2
 from PIL import Image
 import joblib
 import matplotlib.pyplot as plt
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
@@ -22,7 +22,7 @@ st.set_page_config(layout="wide")
 @st.cache_resource
 def load_models():
     cnn_model = None
-    rf_model = None
+    svm_model = None
     try:
         cnn_model = tf.keras.models.load_model("cnn_model.h5")
         st.info("CNN model loaded successfully!")
@@ -30,14 +30,14 @@ def load_models():
         st.warning(f"Could not load CNN model: {e}")
 
     try:
-        rf_model = joblib.load("rf_model.pkl")
-        st.info("Random Forest model loaded successfully!")
+        svm_model = joblib.load("svm_model.pkl")
+        st.info("SVM model loaded successfully!")
     except Exception as e:
-        st.warning(f"Could not load RF model: {e}")
+        st.warning(f"Could not load SVM model: {e}")
 
-    return cnn_model, rf_model
+    return cnn_model, svm_model
 
-cnn_model, rf_model = load_models()
+cnn_model, svm_model = load_models()
 
 if 'page' not in st.session_state:
     st.session_state.page = 1
@@ -61,10 +61,10 @@ def kmeans_segmentation(image_np, n_clusters=4):
     labels = kmeans.fit_predict(pixels)
     return labels.reshape(image_np.shape[0], image_np.shape[1])
 
-def predict_rf(image_np):
+def predict_svm(image_np):
     img_resized = cv2.resize(image_np, (128, 128))
     pixels = img_resized.reshape(-1, 3)
-    prediction = rf_model.predict(pixels)
+    prediction = svm_model.predict(pixels)
     segmented_img = prediction.reshape(128, 128)
     return segmented_img
 
@@ -145,12 +145,12 @@ elif st.session_state.page == 4:
         before_date = st.session_state.before_date
         after_date = st.session_state.after_date
 
-        if cnn_model and rf_model:
+        if cnn_model and svm_model:
             progress_bar = st.progress(0.0, "Processing Images...")
 
-            with st.spinner("Running Random Forest analysis..."):
-                b_mask_rf = predict_rf(b_np)
-                a_mask_rf = predict_rf(a_np)
+            with st.spinner("Running SVM analysis..."):
+                b_mask_svm = predict_svm(b_np)
+                a_mask_svm = predict_svm(a_np)
                 progress_bar.progress(0.25)
 
             with st.spinner("Running K-Means clustering..."):
@@ -163,8 +163,8 @@ elif st.session_state.page == 4:
                 a_mask_cnn = predict_cnn(a_np)
                 progress_bar.progress(0.75)
 
-            diff = difference_heatmap(b_mask_rf, a_mask_rf)
-            calamity_result = detect_calamity(before_date, after_date, b_mask_rf, a_mask_rf)
+            diff = difference_heatmap(b_mask_svm, a_mask_svm)
+            calamity_result = detect_calamity(before_date, after_date, b_mask_svm, a_mask_svm)
             progress_bar.progress(1.0, "Analysis Complete!")
             progress_bar.empty()
 
@@ -188,20 +188,76 @@ elif st.session_state.page == 4:
             with col2:
                 st.image(a_np, caption=f"Original After Image ({after_date})", use_container_width=True)
 
-            st.markdown("**Random Forest Results**")
+            st.markdown("**SVM Results**")
             col3, col4 = st.columns(2)
             with col3:
                 fig1, ax1 = plt.subplots(figsize=(6, 6))
-                im1 = ax1.imshow(b_mask_rf, cmap=ListedColormap([class_colors[classes[i]] for i in sorted(classes)]))
-                ax1.set_title(f"Before ({before_date}) - RF Segmentation")
+                im1 = ax1.imshow(b_mask_svm, cmap=ListedColormap([class_colors[classes[i]] for i in sorted(classes)]))
+                ax1.set_title(f"Before ({before_date}) - SVM Segmentation")
                 ax1.axis('off')
                 st.pyplot(fig1)
             with col4:
                 fig2, ax2 = plt.subplots(figsize=(6, 6))
-                im2 = ax2.imshow(a_mask_rf, cmap=ListedColormap([class_colors[classes[i]] for i in sorted(classes)]))
-                ax2.set_title(f"After ({after_date}) - RF Segmentation")
+                im2 = ax2.imshow(a_mask_svm, cmap=ListedColormap([class_colors[classes[i]] for i in sorted(classes)]))
+                ax2.set_title(f"After ({after_date}) - SVM Segmentation")
                 ax2.axis('off')
                 st.pyplot(fig2)
+
+            st.subheader("Change Detection Analysis")
+            total_pixels = b_mask_svm.size
+            changed_pixels = np.sum(diff > 0)
+            change_percentage = (changed_pixels / total_pixels) * 100
+            st.metric("Total Area Changed", f"{change_percentage:.2f}%", delta=f"{changed_pixels} pixels changed", delta_color="inverse")
+
+            fig3, ax3 = plt.subplots(figsize=(8, 6))
+            ax3.imshow(diff, cmap='Reds')
+            ax3.set_title("Change Detection Heatmap")
+            ax3.axis('off')
+            st.pyplot(fig3)
+
+            st.subheader("Class Distribution - Pie Charts")
+            def plot_pie(mask, title):
+                values, counts = np.unique(mask, return_counts=True)
+                labels = [classes[v] for v in values]
+                plt.figure(figsize=(4, 4))
+                plt.pie(counts, labels=labels, autopct='%1.1f%%', colors=[class_colors[classes[v]] for v in values])
+                plt.title(title)
+                st.pyplot(plt)
+
+            col5, col6 = st.columns(2)
+            with col5:
+                plot_pie(b_mask_svm, f"Before - {before_date}")
+            with col6:
+                plot_pie(a_mask_svm, f"After - {after_date}")
+
+            st.subheader("Class Distribution Table")
+            df_data = []
+            for class_id in sorted(classes):
+                before_pct = np.mean(b_mask_svm == class_id) * 100
+                after_pct = np.mean(a_mask_svm == class_id) * 100
+                change = after_pct - before_pct
+                df_data.append({
+                    "Class": classes[class_id],
+                    "Before (%)": before_pct,
+                    "After (%)": after_pct,
+                    "Change (%)": change,
+                    "Area (sq km)": change * 0.01 * 100,
+                    "Color": class_colors[classes[class_id]]
+                })
+
+            df = pd.DataFrame(df_data)
+            st.dataframe(df.style.format({
+                "Before (%)": "{:.2f}",
+                "After (%)": "{:.2f}",
+                "Change (%)": "{:+.2f}",
+                "Area (sq km)": "{:.2f}"
+            }).background_gradient(subset=["Change (%)"], cmap='RdYlGn'))
+
+            st.subheader("Calamity Assessment")
+            if "Possible" in calamity_result:
+                st.error(f"**Alert:** {calamity_result}")
+            else:
+                st.success(f"**Status:** {calamity_result}")
 
         else:
             st.error("Models not found. Please ensure models are in the correct directory.")
