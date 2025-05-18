@@ -284,7 +284,7 @@ elif st.session_state.page == 4:
 
             # Interactive Data Display
             st.dataframe(
-                df.style.apply(lambda x: [f"background-color: {x['Color']}" for _ in x], axis=1)
+                df.style.apply(lambda x: [f"background-color: {x['Color']}" for _ in x], axis=1))
             
             # Temporal Analysis
             st.subheader("Temporal Distribution Changes")
