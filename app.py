@@ -243,14 +243,22 @@ def page5():
     total_pixels = np.prod(st.session_state.change_mask.shape)
     total_change = (np.sum(st.session_state.change_mask) / total_pixels)
     
+    # Calamity detection
+    # Calamity detection
+    calamity = detect_calamity(
+        st.session_state.before_date,
+        st.session_state.after_date,
+        total_change
+    )
     
-    
-
+    # Display calamity alert
+    st.subheader("Calamity Detection")
+    st.markdown(f"**{calamity}**")
     
     # Classification Table
     st.subheader("Land Classification")
     df_class = pd.DataFrame(list(st.session_state.classification.items()), 
-                            columns=["Class", "Area (%)"])
+                          columns=["Class", "Area (%)"])
     st.table(df_class)
     
     # Pie Chart
@@ -258,49 +266,26 @@ def page5():
     fig, ax = plt.subplots()
     colors = ['#4CAF50', '#FFEB3B', '#2196F3']  # Removed urban color
     ax.pie(df_class["Area (%)"], 
-           labels=df_class["Class"], 
-           autopct='%1.1f%%', 
-           colors=colors)
+          labels=df_class["Class"], 
+          autopct='%1.1f%%', 
+          colors=colors)
     ax.axis('equal')
     st.pyplot(fig)
     
     # Changed area display
     st.subheader(f"Total Changed Area: {total_change*100:.2f}%")
-
-    
-    # Calamity detection
-    calamity = detect_calamity(
-        st.session_state.before_date,
-        st.session_state.after_date,
-        total_change
-    )
-
-    # Display calamity alert with enhanced styling and description
-    st.markdown(
-        """
-        <h2 style='font-size: 36px; color: white;'>
-            🚨 Calamity Detection
-        </h2>
-        <p style='font-size: 18px; color: lightgray;'>
-            Based on the analysis of the uploaded satellite images and change metrics, the system has identified the most likely natural calamity in the region.
-        </p>
-        """,
-        unsafe_allow_html=True
-    )
-
-    st.markdown(f"<h3 style='color: orange;'>{calamity}</h3>", unsafe_allow_html=True)
     
     # Download Section
     st.header("Download Reports")
     csv_bytes = get_csv_bytes(st.session_state.classification)
     st.download_button("Download Classification CSV", data=csv_bytes, 
-                        file_name="classification_summary.csv", mime="text/csv")
+                      file_name="classification_summary.csv", mime="text/csv")
     
     if 'heatmap_overlay' in st.session_state and st.session_state.heatmap_overlay:
         buf = io.BytesIO()
         st.session_state.heatmap_overlay.save(buf, format='PNG')
         st.download_button("Download Annotated Image", data=buf.getvalue(), 
-                            file_name="annotated_after.png", mime="image/png")
+                          file_name="annotated_after.png", mime="image/png")
     
     if st.button("⬅️ Back"):
         st.session_state.page = 4
