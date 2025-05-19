@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import numpy as np
 import cv2
@@ -20,8 +19,19 @@ if 'heatmap_overlay' not in st.session_state:
     st.session_state.heatmap_overlay = None
 if 'aligned_images' not in st.session_state:
     st.session_state.aligned_images = None
+if 'change_mask' not in st.session_state:
+    st.session_state.change_mask = None
+if 'classification' not in st.session_state:
+    st.session_state.classification = None
+if 'before_date' not in st.session_state:
+    st.session_state.before_date = datetime(2023, 1, 1)
+if 'after_date' not in st.session_state:
+    st.session_state.after_date = datetime(2023, 6, 1)
+if 'before_file' not in st.session_state:
+    st.session_state.before_file = None
+if 'after_file' not in st.session_state:
+    st.session_state.after_file = None
 
-import streamlit as st
 
 # Set the page layout and browser tab title
 st.set_page_config(layout="wide", page_title="Satellite Image Analysis")
@@ -77,8 +87,8 @@ def align_images(img1, img2):
         cc, warp_matrix = cv2.findTransformECC(gray1, gray2, warp_matrix, 
                                              cv2.MOTION_EUCLIDEAN, criteria)
         aligned = cv2.warpAffine(img2_np, warp_matrix, 
-                                (img1_np.shape[1], img1_np.shape[0]), 
-                                flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
+                                 (img1_np.shape[1], img1_np.shape[0]), 
+                                 flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
         
         diff_mask = cv2.absdiff(img1_np, aligned)
         diff_mask = cv2.cvtColor(diff_mask, cv2.COLOR_RGB2GRAY)
@@ -126,54 +136,57 @@ def get_csv_bytes(data_dict):
 # -------- Pages --------
 def page1():
     st.header("1. Model Selection")
-    st.session_state.model_choice = st.selectbox("Select Analysis Model", ["SVM", "CNN", "KMeans"])
+    st.session_state.model_choice = st.selectbox("Select Analysis Model", ["SVM", "CNN"])
     if st.button("Next ➡️"):
         st.session_state.page = 2
 
 def page2():
     st.markdown(
-    """
-    <h2 style='font-size: 36px; color: white;'>
-        2. Image Upload & Dates
-    </h2>
-    <p style='font-size: 18px; color: lightgray;'>
-        Please upload the <b>before</b> and <b>after/current</b> satellite images along with their respective dates for analysis.
-    </p>
-    """,
-    unsafe_allow_html=True
-)
+        """
+        <h2 style='font-size: 36px; color: white;'>
+            2. Image Upload & Dates
+        </h2>
+        <p style='font-size: 18px; color: lightgray;'>
+            Please upload the <b>before</b> and <b>after/current</b> satellite images along with their respective dates for analysis.
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
     with st.sidebar:
-        st.session_state.before_date = st.date_input("BEFORE image date", value=datetime(2023, 1, 1))
+        st.session_state.before_date = st.date_input("BEFORE image date", value=st.session_state.before_date)
         st.session_state.before_file = st.file_uploader("Upload BEFORE image", 
-                                                      type=["png", "jpg", "tif"], 
-                                                      key="before")
-        st.session_state.after_date = st.date_input("AFTER image date", value=datetime(2023, 6, 1))
+                                                        type=["png", "jpg", "tif"], 
+                                                        key="before")
+        st.session_state.after_date = st.date_input("AFTER image date", value=st.session_state.after_date)
         st.session_state.after_file = st.file_uploader("Upload AFTER image", 
-                                                     type=["png", "jpg", "tif"], 
-                                                     key="after")
+                                                       type=["png", "jpg", "tif"], 
+                                                       key="after")
     
     if st.button("⬅️ Back"):
         st.session_state.page = 1
     if st.session_state.before_file and st.session_state.after_file:
         if st.button("Next ➡️"):
-            before_img = Image.open(st.session_state.before_file).convert("RGB")
-            after_img = Image.open(st.session_state.after_file).convert("RGB")
-            
-            # Align images using ECC method
-            aligned_after, aligned_black = align_images(before_img, after_img)
-            st.session_state.aligned_images = {
-                "before": before_img,
-                "after": aligned_after,
-                "aligned_black": aligned_black
-            }
-            
-            # Calculate change mask
-            st.session_state.change_mask = get_change_mask(before_img, aligned_after)
-            
-            # Classify land
-            st.session_state.classification = classify_land(aligned_after)
-            
-            st.session_state.page = 3
+            try:
+                before_img = Image.open(st.session_state.before_file).convert("RGB")
+                after_img = Image.open(st.session_state.after_file).convert("RGB")
+                
+                # Align images using ECC method
+                aligned_after, aligned_black = align_images(before_img, after_img)
+                st.session_state.aligned_images = {
+                    "before": before_img,
+                    "after": aligned_after,
+                    "aligned_black": aligned_black
+                }
+                
+                # Calculate change mask
+                st.session_state.change_mask = get_change_mask(before_img, aligned_after)
+                
+                # Classify land
+                st.session_state.classification = classify_land(aligned_after)
+                
+                st.session_state.page = 3
+            except Exception as e:
+                st.error(f"Error processing images: {e}")
 
 def page3():
     st.header("3. Aligned Images Comparison")
@@ -186,13 +199,13 @@ def page3():
     col1, col2, col3 = st.columns(3)
     with col1:
         st.image(st.session_state.aligned_images["before"], 
-                caption="BEFORE Image", use_column_width=True)
+                 caption="BEFORE Image", use_column_width=True)
     with col2:
         st.image(st.session_state.aligned_images["after"], 
-                caption="Aligned AFTER Image", use_column_width=True)
+                 caption="Aligned AFTER Image", use_column_width=True)
     with col3:
         st.image(st.session_state.aligned_images["aligned_black"], 
-                caption="Aligned Difference", use_column_width=True)
+                 caption="Aligned Difference", use_column_width=True)
     
     if st.button("⬅️ Back"):
         st.session_state.page = 2
@@ -202,9 +215,9 @@ def page3():
 def page4():
     st.header("4. Change Detection Heatmap")
     
-    # Ensure we have valid images
-    if 'aligned_images' not in st.session_state or st.session_state.aligned_images is None:
-        st.error("Please upload images first")
+    # Ensure we have valid images and change mask
+    if 'aligned_images' not in st.session_state or st.session_state.aligned_images is None or st.session_state.change_mask is None:
+        st.error("Please upload and process images first")
         st.session_state.page = 2
         return
     
@@ -221,8 +234,8 @@ def page4():
     
     # Create overlay and store in session
     st.session_state.heatmap_overlay = Image.blend(aligned_after.convert("RGB"), 
-                                                 heatmap_img.convert("RGB"), 
-                                                 alpha=0.5)
+                                                    heatmap_img.convert("RGB"), 
+                                                    alpha=0.5)
     st.image(st.session_state.heatmap_overlay, use_column_width=True)
     
     if st.button("⬅️ Back"):
@@ -233,8 +246,8 @@ def page4():
 def page5():
     st.header("5. Land Classification & Analysis")
     
-    if 'classification' not in st.session_state:
-        st.error("Classification data not found. Please start from the beginning.")
+    if 'classification' not in st.session_state or 'change_mask' not in st.session_state or 'before_date' not in st.session_state or 'after_date' not in st.session_state:
+        st.error("Analysis data not found. Please start from the beginning.")
         st.session_state.page = 1
         return
     
@@ -243,21 +256,32 @@ def page5():
     total_change = (np.sum(st.session_state.change_mask) / total_pixels)
     
     # Calamity detection
-    # Calamity detection
     calamity = detect_calamity(
         st.session_state.before_date,
         st.session_state.after_date,
         total_change
     )
-    
-    # Display calamity alert
-    st.subheader("Calamity Detection")
-    st.markdown(f"**{calamity}**")
+
+    # Display calamity alert with enhanced styling and description
+    st.markdown(
+        """
+        <h2 style='font-size: 36px; color: white;'>
+            🚨 Calamity Detection
+        </h2>
+        <p style='font-size: 18px; color: lightgray;'>
+            Based on the analysis of the uploaded satellite images and change metrics, the system has identified the most likely natural calamity in the region.
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
+
+    st.markdown(f"<h3 style='color: orange;'>{calamity}</h3>", unsafe_allow_html=True)
+
     
     # Classification Table
     st.subheader("Land Classification")
     df_class = pd.DataFrame(list(st.session_state.classification.items()), 
-                          columns=["Class", "Area (%)"])
+                            columns=["Class", "Area (%)"])
     st.table(df_class)
     
     # Pie Chart
@@ -265,9 +289,9 @@ def page5():
     fig, ax = plt.subplots()
     colors = ['#4CAF50', '#FFEB3B', '#2196F3']  # Removed urban color
     ax.pie(df_class["Area (%)"], 
-          labels=df_class["Class"], 
-          autopct='%1.1f%%', 
-          colors=colors)
+           labels=df_class["Class"], 
+           autopct='%1.1f%%', 
+           colors=colors)
     ax.axis('equal')
     st.pyplot(fig)
     
@@ -278,13 +302,13 @@ def page5():
     st.header("Download Reports")
     csv_bytes = get_csv_bytes(st.session_state.classification)
     st.download_button("Download Classification CSV", data=csv_bytes, 
-                      file_name="classification_summary.csv", mime="text/csv")
+                        file_name="classification_summary.csv", mime="text/csv")
     
     if 'heatmap_overlay' in st.session_state and st.session_state.heatmap_overlay:
         buf = io.BytesIO()
         st.session_state.heatmap_overlay.save(buf, format='PNG')
         st.download_button("Download Annotated Image", data=buf.getvalue(), 
-                          file_name="annotated_after.png", mime="image/png")
+                            file_name="annotated_after.png", mime="image/png")
     
     if st.button("⬅️ Back"):
         st.session_state.page = 4
