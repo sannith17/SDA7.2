@@ -44,41 +44,58 @@ def preprocess_img(img, size=(64,64)):
     return img_arr
 
 def align_and_crop(before_img, after_img):
-    before_gray = cv2.cvtColor(np.array(before_img), cv2.COLOR_RGB2GRAY)
-    after_gray = cv2.cvtColor(np.array(after_img), cv2.COLOR_RGB2GRAY)
+    # Convert PIL Images to numpy arrays
+    before_np = np.array(before_img)
+    after_np = np.array(after_img)
+    
+    # Convert to grayscale
+    before_gray = cv2.cvtColor(before_np, cv2.COLOR_RGB2GRAY)
+    after_gray = cv2.cvtColor(after_np, cv2.COLOR_RGB2GRAY)
 
+    # Initialize ORB detector
     orb = cv2.ORB_create(5000)
     kp1, des1 = orb.detectAndCompute(before_gray, None)
     kp2, des2 = orb.detectAndCompute(after_gray, None)
 
+    # Match features
     bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
     matches = bf.match(des1, des2)
     matches = sorted(matches, key=lambda x: x.distance)
 
+    # Extract location of good matches
     src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
     dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
 
+    # Find homography
     M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
-    h, w = before_gray.shape
-    aligned_after = cv2.warpPerspective(np.array(after_img), M, (w, h))
+    if M is None:
+        return before_img, after_img  # Return original if alignment fails
 
-    before_mask = cv2.cvtColor(np.array(before_img), cv2.COLOR_RGB2GRAY) > 0
+    h, w = before_gray.shape
+    aligned_after = cv2.warpPerspective(after_np, M, (w, h))
+
+    # Create masks and find overlapping region
+    before_mask = cv2.cvtColor(before_np, cv2.COLOR_RGB2GRAY) > 0
     after_mask = cv2.cvtColor(aligned_after, cv2.COLOR_RGB2GRAY) > 0
     overlap_mask = np.logical_and(before_mask, after_mask)
 
     coords = np.column_stack(np.where(overlap_mask))
     if coords.size == 0:
-        return before_img, after_img  # Return original if no overlap
+        return before_img, Image.fromarray(aligned_after)  # Return original if no overlap
     
     y0, x0 = coords.min(axis=0)
     y1, x1 = coords.max(axis=0) + 1
 
-    cropped_before = np.array(before_img)[y0:y1, x0:x1]
+    # Crop images
+    cropped_before = before_np[y0:y1, x0:x1]
     cropped_after = aligned_after[y0:y1, x0:x1]
 
     return Image.fromarray(cropped_before), Image.fromarray(cropped_after)
 
 def get_change_mask(img1, img2, threshold=30):
+    # Ensure images are the same size
+    img2 = img2.resize(img1.size)
+    
     gray1 = cv2.cvtColor(np.array(img1), cv2.COLOR_RGB2GRAY)
     gray2 = cv2.cvtColor(np.array(img2), cv2.COLOR_RGB2GRAY)
     diff = cv2.absdiff(gray1, gray2)
@@ -86,6 +103,7 @@ def get_change_mask(img1, img2, threshold=30):
     return change_mask.astype(np.uint8)
 
 def classify_land(img):
+    # Dummy classification - in a real app, replace with actual model prediction
     return {"Vegetation": 35, "Land": 30, "Urban": 25, "Water": 10}
 
 def get_csv_bytes(data_dict):
@@ -138,6 +156,12 @@ def page3():
 def page4():
     st.header("4. Change Detection Heatmap")
     
+    # Ensure we have valid images
+    if 'cropped_after' not in st.session_state or 'change_mask' not in st.session_state:
+        st.error("Please upload images first")
+        st.session_state.page = 2
+        return
+    
     # Get dimensions from change mask
     h, w = st.session_state.change_mask.shape
     
@@ -150,7 +174,7 @@ def page4():
     cropped_after = st.session_state.cropped_after.resize((w, h))  # Ensure same size
     
     # Create overlay and store in session
-    st.session_state.heatmap_overlay = Image.blend(cropped_after, heatmap_img, alpha=0.5)
+    st.session_state.heatmap_overlay = Image.blend(cropped_after.convert("RGB"), heatmap_img.convert("RGB"), alpha=0.5)
     st.image(st.session_state.heatmap_overlay, use_column_width=True)
     
     if st.button("⬅️ Back"):
@@ -160,6 +184,11 @@ def page4():
 
 def page5():
     st.header("5. Land Classification Analysis")
+    
+    if 'classification' not in st.session_state:
+        st.error("Classification data not found. Please start from the beginning.")
+        st.session_state.page = 1
+        return
     
     # Classification Table
     st.subheader("Land Classification")
@@ -178,9 +207,10 @@ def page5():
     st.pyplot(fig)
     
     # Changed area calculation
-    total_pixels = np.prod(st.session_state.change_mask.shape)
-    total_change = (np.sum(st.session_state.change_mask) / total_pixels) * 100
-    st.subheader(f"Total Changed Area: {total_change:.2f}%")
+    if 'change_mask' in st.session_state:
+        total_pixels = np.prod(st.session_state.change_mask.shape)
+        total_change = (np.sum(st.session_state.change_mask) / total_pixels) * 100
+        st.subheader(f"Total Changed Area: {total_change:.2f}%")
     
     # Download Section
     st.header("Download Reports")
@@ -188,7 +218,7 @@ def page5():
     st.download_button("Download Classification CSV", data=csv_bytes, 
                       file_name="classification_summary.csv", mime="text/csv")
     
-    if st.session_state.heatmap_overlay:
+    if 'heatmap_overlay' in st.session_state and st.session_state.heatmap_overlay:
         buf = io.BytesIO()
         st.session_state.heatmap_overlay.save(buf, format='PNG')
         st.download_button("Download Annotated Image", data=buf.getvalue(), 
@@ -209,7 +239,11 @@ def main():
         5: page5
     }
     
-    pages[st.session_state.page]()
+    if st.session_state.page in pages:
+        pages[st.session_state.page]()
+    else:
+        st.session_state.page = 1
+        pages[1]()
 
 if __name__ == "__main__":
     main()
