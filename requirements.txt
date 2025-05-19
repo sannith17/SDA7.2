@@ -13,3 +13,4 @@ folium
 streamlit-folium
 torch
 torchvision
+seaborn
