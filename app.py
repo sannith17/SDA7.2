@@ -21,7 +21,21 @@ if 'heatmap_overlay' not in st.session_state:
 if 'aligned_images' not in st.session_state:
     st.session_state.aligned_images = None
 
+import streamlit as st
+
+# Set the page layout and browser tab title
 st.set_page_config(layout="wide", page_title="Satellite Image Analysis")
+
+# Custom visible title with yellow color and large font
+st.markdown(
+    """
+    <h1 style='color: yellow; font-size: 72px; font-weight: bold;'>
+        Satellite Image Analysis
+    </h1>
+    """,
+    unsafe_allow_html=True
+)
+
 
 # -------- Models --------
 class DummyCNN(nn.Module):
