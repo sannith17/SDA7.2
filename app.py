@@ -244,27 +244,15 @@ def page5():
     
     # Calamity detection
     # Calamity detection
-calamity = detect_calamity(
-    st.session_state.before_date,
-    st.session_state.after_date,
-    total_change
-)
-
-# Display calamity alert with enhanced styling and description
-st.markdown(
-    """
-    <h2 style='font-size: 36px; color: white;'>
-        🚨 Calamity Detection
-    </h2>
-    <p style='font-size: 18px; color: lightgray;'>
-        Based on the analysis of the uploaded satellite images and change metrics, the system has identified the most likely natural calamity in the region.
-    </p>
-    """,
-    unsafe_allow_html=True
-)
-
-st.markdown(f"<h3 style='color: orange;'>{calamity}</h3>", unsafe_allow_html=True)
-
+    calamity = detect_calamity(
+        st.session_state.before_date,
+        st.session_state.after_date,
+        total_change
+    )
+    
+    # Display calamity alert
+    st.subheader("Calamity Detection")
+    st.markdown(f"**{calamity}**")
     
     # Classification Table
     st.subheader("Land Classification")
