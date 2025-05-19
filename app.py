@@ -131,7 +131,17 @@ def page1():
         st.session_state.page = 2
 
 def page2():
-    st.header("2. Image Upload & Dates")
+    st.markdown(
+    """
+    <h2 style='font-size: 36px; color: white;'>
+        2. Image Upload & Dates
+    </h2>
+    <p style='font-size: 18px; color: lightgray;'>
+        Please upload the <b>before</b> and <b>after/current</b> satellite images along with their respective dates for analysis.
+    </p>
+    """,
+    unsafe_allow_html=True
+)
     with st.sidebar:
         st.session_state.before_date = st.date_input("BEFORE image date", value=datetime(2023, 1, 1))
         st.session_state.before_file = st.file_uploader("Upload BEFORE image", 
