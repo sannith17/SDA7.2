@@ -11,3 +11,5 @@ scikit-image
 scipy
 folium
 streamlit-folium
+torch
+torchvision
