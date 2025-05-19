@@ -1,164 +1,156 @@
 import streamlit as st
 import numpy as np
 import cv2
-import datetime
-import base64
-from io import BytesIO
+import os
 from PIL import Image
+import io
+import datetime
+from sklearn.cluster import KMeans
+from sklearn.svm import SVC
 import matplotlib.pyplot as plt
 import seaborn as sns
-import pandas as pd
+import base64
 
-# Dummy CNN and SVM models
-def dummy_svm_model(img_array):
-    return np.random.choice([0, 1])
+from tensorflow.keras.models import load_model
+import joblib
 
-def dummy_cnn_model(img_array):
-    classes = ['Water', 'Vegetation', 'Urban', 'Land']
-    output = np.random.choice(classes, size=(100, 100), p=[0.2, 0.3, 0.2, 0.3])
-    return output
+cnn_model = load_model("models/cnn_model.h5")
+svm_model = joblib.load("models/svm_model.pkl")
 
-# Alignment using ECC
-def align_images(img1, img2):
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
-    warp_matrix = np.eye(2, 3, dtype=np.float32)
-    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 5000, 1e-10)
-    try:
-        cc, warp_matrix = cv2.findTransformECC(gray1, gray2, warp_matrix, cv2.MOTION_EUCLIDEAN, criteria)
-        aligned = cv2.warpAffine(img2, warp_matrix, (img1.shape[1], img1.shape[0]), flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP)
-        diff_mask = cv2.absdiff(img1, aligned)
-        diff_mask = cv2.cvtColor(diff_mask, cv2.COLOR_BGR2GRAY)
-        _, black_mask = cv2.threshold(diff_mask, 30, 255, cv2.THRESH_BINARY_INV)
-        aligned_black = cv2.bitwise_and(aligned, aligned, mask=black_mask)
-        return aligned, aligned_black
-    except Exception as e:
-        st.error(f"Image alignment failed: {e}")
-        return img2, img2
 
-# Classification visualization
-def get_classification_map(cnn_output):
-    color_map = {
-        'Water': (0, 0, 255),
-        'Vegetation': (0, 255, 0),
-        'Urban': (128, 128, 128),
-        'Land': (210, 180, 140)
-    }
-    heatmap = np.zeros((cnn_output.shape[0], cnn_output.shape[1], 3), dtype=np.uint8)
-    for cls, color in color_map.items():
-        heatmap[cnn_output == cls] = color
-    return heatmap
+st.set_page_config(layout="wide")
 
-def classification_stats(cnn_output):
-    flat = cnn_output.flatten()
-    unique, counts = np.unique(flat, return_counts=True)
-    stats = dict(zip(unique, counts))
-    df = pd.DataFrame({'Class': list(stats.keys()), 'Count': list(stats.values())})
-    return df
+# Persistent states
+if "page" not in st.session_state:
+    st.session_state.page = 1
+if "model_choice" not in st.session_state:
+    st.session_state.model_choice = None
+if "before_image" not in st.session_state:
+    st.session_state.before_image = None
+if "after_image" not in st.session_state:
+    st.session_state.after_image = None
+if "aligned_before" not in st.session_state:
+    st.session_state.aligned_before = None
+if "aligned_after" not in st.session_state:
+    st.session_state.aligned_after = None
 
-# Download helper
-def get_download_link(img, filename, label):
-    buffered = BytesIO()
-    img.save(buffered, format="PNG")
-    b64 = base64.b64encode(buffered.getvalue()).decode()
-    return f'<a href="data:file/png;base64,{b64}" download="{filename}">{label}</a>'
+# Page Navigation
+def next_page():
+    st.session_state.page += 1
 
-# Streamlit UI
-st.set_page_config(page_title="Satellite Analysis App", layout="wide")
-st.title("🌍 Satellite Data Change Detection Dashboard")
+# PAGE 1: Model Selection
+if st.session_state.page == 1:
+    st.title("Satellite Image Analysis - Model Selection")
+    st.session_state.model_choice = st.selectbox("Choose a model combination", ["CNN-SVM", "SVM-KMeans"])
+    if st.button("Next"):
+        next_page()
 
-# Page Selector
-page = st.sidebar.selectbox("Navigate Pages", ["1. Choose Model", "2. Upload Images", "3. Align Images", "4. Output & Analysis"])
+# PAGE 2: Upload Images
+elif st.session_state.page == 2:
+    st.title("Upload Satellite Images")
+    before = st.file_uploader("Upload 'Before' Image", type=["jpg", "png", "jpeg"], key="before")
+    after = st.file_uploader("Upload 'After' Image", type=["jpg", "png", "jpeg"], key="after")
 
-# Session variables
-if "model_choice" not in st.session_state: st.session_state.model_choice = "SVM-KMeans"
-if "before_img" not in st.session_state: st.session_state.before_img = None
-if "after_img" not in st.session_state: st.session_state.after_img = None
-if "aligned_img" not in st.session_state: st.session_state.aligned_img = None
-if "aligned_black" not in st.session_state: st.session_state.aligned_black = None
-if "cnn_output" not in st.session_state: st.session_state.cnn_output = None
+    if before and after:
+        before_img = Image.open(before)
+        after_img = Image.open(after)
+        st.session_state.before_image = before_img
+        st.session_state.after_image = after_img
+        today = datetime.date.today()
+        st.write(f"Images uploaded on: **{today.strftime('%B %d, %Y')}**")
+        st.image([before_img, after_img], caption=["Before Image", "After Image"], width=300)
 
-# Page 1: Choose Model
-if page.startswith("1"):
-    st.header("🔍 Select Detection Model")
-    st.session_state.model_choice = st.radio("Choose Model Type:", ["SVM-KMeans", "SVM-CNN"])
-    st.success(f"✅ You selected: {st.session_state.model_choice}")
+    if st.button("Next"):
+        next_page()
 
-# Page 2: Upload
-elif page.startswith("2"):
-    st.header("📤 Upload Satellite Images")
-    before_file = st.file_uploader("Upload BEFORE image", type=["png", "jpg", "jpeg"], key="before")
-    after_file = st.file_uploader("Upload AFTER image", type=["png", "jpg", "jpeg"], key="after")
-    date_upload = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    if before_file and after_file:
-        st.session_state.before_img = np.array(Image.open(before_file).convert("RGB"))
-        st.session_state.after_img = np.array(Image.open(after_file).convert("RGB"))
-        st.success(f"🗓️ Images uploaded successfully on {date_upload}")
+# PAGE 3: Image Alignment
+elif st.session_state.page == 3:
+    st.title("Align Images")
+    def align_images(img1, img2):
+        img1 = np.array(img1.convert("L"))
+        img2 = np.array(img2.convert("L"))
 
-# Page 3: Alignment
-elif page.startswith("3"):
-    st.header("🧭 Image Alignment")
-    if st.session_state.before_img is not None and st.session_state.after_img is not None:
-        aligned, black_output = align_images(st.session_state.before_img, st.session_state.after_img)
-        st.session_state.aligned_img = aligned
-        st.session_state.aligned_black = black_output
-        col1, col2, col3 = st.columns(3)
-        col1.image(st.session_state.before_img, caption="Before")
-        col2.image(st.session_state.after_img, caption="After")
-        col3.image(st.session_state.aligned_black, caption="Aligned Output (Black background)")
-    else:
-        st.warning("Please upload images first.")
+        orb = cv2.ORB_create()
+        kp1, des1 = orb.detectAndCompute(img1, None)
+        kp2, des2 = orb.detectAndCompute(img2, None)
 
-# Page 4: Output
-elif page.startswith("4"):
-    st.header("📊 Output Analysis & Calamity Detection")
-    if st.session_state.aligned_black is not None:
-        model_type = st.session_state.model_choice
-        # Run CNN if selected
-        if "CNN" in model_type:
-            cnn_result = dummy_cnn_model(st.session_state.aligned_black)
-            st.session_state.cnn_output = cnn_result
-            class_map_img = get_classification_map(cnn_result)
-            df_stats = classification_stats(cnn_result)
-            st.subheader("🧭 Classified Image (After)")
-            st.image(class_map_img, caption="CNN Output - Classified")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("📋 Land Class Table")
-                st.dataframe(df_stats)
-            with col2:
-                st.subheader("📊 Pie Chart")
-                fig, ax = plt.subplots()
-                ax.pie(df_stats["Count"], labels=df_stats["Class"], autopct="%1.1f%%", startangle=90)
-                st.pyplot(fig)
+        bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+        matches = bf.match(des1, des2)
+        matches = sorted(matches, key=lambda x: x.distance)
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
 
-            # Heatmap
-            st.subheader("🔥 Heatmap (Change Areas Only)")
-            heatmap = np.zeros_like(cnn_result, dtype=np.uint8)
-            heatmap[np.random.rand(*cnn_result.shape) > 0.85] = 255  # dummy change mask
-            fig2, ax2 = plt.subplots()
-            sns.heatmap(heatmap, cbar=False, cmap="coolwarm", ax=ax2)
-            st.pyplot(fig2)
+        M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+        aligned = cv2.warpPerspective(np.array(st.session_state.after_image), M, (img1.shape[1], img1.shape[0]))
 
-            # Calamity possibility
-            total_water = df_stats[df_stats["Class"] == "Water"]["Count"].values[0] if "Water" in df_stats["Class"].values else 0
-            water_change = np.random.randint(5, 30)
-            st.markdown("### ⚠️ Calamity Possibility")
-            if water_change > 20:
-                st.error("Flooding Detected: High Water Body Increase")
-            else:
-                st.success("No Major Calamity Detected")
+        return st.session_state.before_image, Image.fromarray(aligned)
 
-            # Download
-            st.markdown("### ⬇️ Downloads")
-            result_img = Image.fromarray(class_map_img)
-            download_img = get_download_link(result_img, "classified_output.png", "📥 Download Classified Image")
-            download_csv = df_stats.to_csv(index=False).encode("utf-8")
-            b64_csv = base64.b64encode(download_csv).decode()
-            download_csv_link = f'<a href="data:file/csv;base64,{b64_csv}" download="classification_stats.csv">📥 Download Table (CSV)</a>'
-            st.markdown(download_img, unsafe_allow_html=True)
-            st.markdown(download_csv_link, unsafe_allow_html=True)
-        else:
-            st.warning("Only CNN-based analysis supported in current demo for full analysis.")
-    else:
-        st.warning("Please align images first.")
+    if st.session_state.before_image and st.session_state.after_image:
+        b, a = align_images(st.session_state.before_image, st.session_state.after_image)
+        st.session_state.aligned_before = b
+        st.session_state.aligned_after = a
+        st.image([b, a], caption=["Aligned Before", "Aligned After"], width=300)
+    if st.button("Next"):
+        next_page()
+
+# PAGE 4: Output Analysis
+elif st.session_state.page == 4:
+    st.title("Land Cover Classification and Change Detection")
+
+    def classify_image_kmeans(img, n_clusters=3):
+        img_np = np.array(img.resize((256, 256)))
+        X = img_np.reshape(-1, 3)
+        kmeans = KMeans(n_clusters=n_clusters, random_state=0).fit(X)
+        segmented = kmeans.labels_.reshape(256, 256)
+        return segmented
+
+    def classify_image_svm(img):
+        img_np = np.array(img.resize((256, 256)))
+        flat = img_np.reshape(-1, 3)
+        labels = svm_model.predict(flat)
+        return labels.reshape(256, 256)
+
+    model_choice = st.session_state.model_choice
+    after_img = st.session_state.aligned_after
+    before_img = st.session_state.aligned_before
+
+    if model_choice == "CNN-SVM":
+        result_before = classify_image_svm(before_img)
+        result_after = classify_image_svm(after_img)
+    else:  # SVM-KMeans
+        result_before = classify_image_kmeans(before_img)
+        result_after = classify_image_kmeans(after_img)
+
+    changed_mask = result_before != result_after
+    total_pixels = changed_mask.size
+    changed_pixels = np.sum(changed_mask)
+    changed_percent = round((changed_pixels / total_pixels) * 100, 2)
+
+    # Show "After" image with only changed areas colored
+    color_img = np.array(after_img.resize((256, 256))).copy()
+    mask_3d = np.stack([changed_mask]*3, axis=-1)
+    color_img[~mask_3d] = 0
+
+    st.subheader("Changed Areas (After Image)")
+    st.image(color_img, caption=f"Changed areas highlighted ({changed_percent}%)", use_column_width=True)
+
+    # Piechart and Table
+    unique, counts = np.unique(result_after, return_counts=True)
+    labels_map = {0: "Water", 1: "Vegetation", 2: "Land"}
+    filtered = {labels_map[k]: v for k, v in zip(unique, counts) if k in labels_map}
+
+    fig, ax = plt.subplots()
+    ax.pie(filtered.values(), labels=filtered.keys(), autopct='%1.1f%%', colors=sns.color_palette("pastel"))
+    st.pyplot(fig)
+
+    st.subheader("Area Distribution")
+    table_data = [{"Class": k, "Pixels": v, "Percentage": f"{(v / total_pixels) * 100:.2f}%"} for k, v in filtered.items()]
+    st.table(table_data)
+
+    st.markdown(f"### Calamity Possibility: {'⚠️ Possible Calamity Detected' if changed_percent > 30 else '✅ No Major Change Detected'}")
+
+    # Download CSV Report
+    csv_str = "Class,Pixels,Percentage\n" + "\n".join([f"{row['Class']},{row['Pixels']},{row['Percentage']}" for row in table_data])
+    b64 = base64.b64encode(csv_str.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="classification_report.csv">📄 Download CSV Report</a>'
+    st.markdown(href, unsafe_allow_html=True)
