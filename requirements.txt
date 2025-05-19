@@ -9,3 +9,5 @@ joblib
 matplotlib
 scikit-image
 scipy
+folium
+streamlit-folium
