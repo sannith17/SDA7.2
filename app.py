@@ -1,301 +1,215 @@
 import streamlit as st
 import numpy as np
+import pandas as pd
 import cv2
 from PIL import Image
-import matplotlib.pyplot as plt
-import pandas as pd
 import io
-import folium
-from streamlit_folium import st_folium
-from sklearn.svm import SVC
-from sklearn.cluster import KMeans
-from tensorflow.keras.models import load_model
-from tensorflow.keras.preprocessing.image import img_to_array
-import tempfile
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+from sklearn import svm
+import torch
+import torch.nn as nn
+import torchvision.transforms as transforms
 
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="Satellite Image Analysis")
 
-# Load or define your models here (dummy placeholders)
-@st.cache_resource
-def load_cnn_model():
-    try:
-        model = load_model("cnn_model.h5")
-    except Exception:
-        model = None
-    return model
+# -------- Dummy CNN model (replace with your real model) --------
+class DummyCNN(nn.Module):
+    def __init__(self):
+        super(DummyCNN, self).__init__()
+        self.conv1 = nn.Conv2d(3, 6, 3)
+        self.pool = nn.MaxPool2d(2,2)
+        self.fc1 = nn.Linear(6*14*14, 2)
+    def forward(self, x):
+        x = self.pool(torch.relu(self.conv1(x)))
+        x = x.view(-1, 6*14*14)
+        x = self.fc1(x)
+        return x
 
-@st.cache_resource
-def load_svm_model():
-    # Load your actual trained SVM model here (sklearn)
-    # Dummy example: model = joblib.load("svm_model.pkl")
-    model = SVC(probability=True)
-    return model
+cnn_model = DummyCNN()
+cnn_model.eval()
 
-cnn_model = load_cnn_model()
-svm_model = load_svm_model()
+# -------- Dummy SVM model (replace with your real model) --------
+svm_model = svm.SVC(probability=True)
+# Normally you'd train and load model; here we mock
 
-def align_images(img1, img2):
+# -------- Image preprocessing --------
+def preprocess_img(img, size=(64,64)):
+    img = img.convert("RGB").resize(size)
+    img_arr = np.array(img)/255.0
+    return img_arr
+
+# -------- Align and crop images to common overlap --------
+def align_and_crop(before_img, after_img):
+    # Convert to gray
+    before_gray = cv2.cvtColor(np.array(before_img), cv2.COLOR_RGB2GRAY)
+    after_gray = cv2.cvtColor(np.array(after_img), cv2.COLOR_RGB2GRAY)
+
+    # Detect ORB features and descriptors.
+    orb = cv2.ORB_create(5000)
+    kp1, des1 = orb.detectAndCompute(before_gray, None)
+    kp2, des2 = orb.detectAndCompute(after_gray, None)
+
+    # Match features.
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+    matches = bf.match(des1, des2)
+
+    # Sort matches by distance.
+    matches = sorted(matches, key=lambda x: x.distance)
+
+    # Extract matched keypoints.
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in matches]).reshape(-1,1,2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in matches]).reshape(-1,1,2)
+
+    # Compute homography
+    M, mask = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+
+    h, w = before_gray.shape
+    aligned_after = cv2.warpPerspective(np.array(after_img), M, (w, h))
+
+    # Crop common overlapping area (intersection of valid pixels)
+    before_mask = cv2.cvtColor(np.array(before_img), cv2.COLOR_RGB2GRAY) > 0
+    after_mask = cv2.cvtColor(aligned_after, cv2.COLOR_RGB2GRAY) > 0
+    overlap_mask = np.logical_and(before_mask, after_mask)
+
+    # Find bounding rect of overlap
+    coords = np.column_stack(np.where(overlap_mask))
+    y0, x0 = coords.min(axis=0)
+    y1, x1 = coords.max(axis=0) + 1
+
+    cropped_before = np.array(before_img)[y0:y1, x0:x1]
+    cropped_after = aligned_after[y0:y1, x0:x1]
+
+    return Image.fromarray(cropped_before), Image.fromarray(cropped_after)
+
+# -------- Generate change mask between two images --------
+def get_change_mask(img1, img2, threshold=30):
     # Convert to grayscale
-    gray1 = cv2.cvtColor(img1, cv2.COLOR_BGR2GRAY)
-    gray2 = cv2.cvtColor(img2, cv2.COLOR_BGR2GRAY)
+    gray1 = cv2.cvtColor(np.array(img1), cv2.COLOR_RGB2GRAY)
+    gray2 = cv2.cvtColor(np.array(img2), cv2.COLOR_RGB2GRAY)
+    diff = cv2.absdiff(gray1, gray2)
+    _, change_mask = cv2.threshold(diff, threshold, 1, cv2.THRESH_BINARY)
+    return change_mask
 
-    sift = cv2.SIFT_create()
-    kp1, des1 = sift.detectAndCompute(gray1, None)
-    kp2, des2 = sift.detectAndCompute(gray2, None)
+# -------- Land classification summary (mock) --------
+def classify_land(img):
+    # Dummy classification percentages, replace with your own model/classification
+    return {"Vegetation": 35, "Land": 30, "Urban": 25, "Water": 10}
 
-    matcher = cv2.FlannBasedMatcher()
-    matches = matcher.knnMatch(des1, des2, k=2)
+# -------- CNN visualization (mock heatmap) --------
+def cnn_visualization(img):
+    # Dummy heatmap for CNN (replace with real CAM/GradCAM etc.)
+    heatmap = np.random.rand(img.size[1], img.size[0])
+    plt.figure(figsize=(6,6))
+    sns.heatmap(heatmap, cmap="viridis")
+    plt.title("CNN Feature Map (Dummy)")
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    plt.close()
+    buf.seek(0)
+    return Image.open(buf)
 
-    good_matches = []
-    for m, n in matches:
-        if m.distance < 0.7 * n.distance:
-            good_matches.append(m)
+# -------- Download CSV summary --------
+def get_csv_bytes(data_dict):
+    df = pd.DataFrame(list(data_dict.items()), columns=["Class", "Area (%)"])
+    return df.to_csv(index=False).encode()
 
-    if len(good_matches) > 10:
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in good_matches]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good_matches]).reshape(-1, 1, 2)
+# -------- Main Streamlit App --------
+def main():
+    st.title("Satellite Image Analysis with Alignment & Land Classification")
 
-        H, mask = cv2.findHomography(src_pts, dst_pts, cv2.RANSAC, 5.0)
-        height, width = img2.shape[:2]
-        aligned_img = cv2.warpPerspective(img1, H, (width, height))
-        return aligned_img, H
-    else:
-        st.warning("Not enough matches found for alignment.")
-        return img1, None
+    st.sidebar.header("Upload BEFORE and AFTER images with dates")
+    before_date = st.sidebar.date_input("Upload date for BEFORE image")
+    before_file = st.sidebar.file_uploader("Upload BEFORE image", type=["png", "jpg", "tif"], key="before")
 
-def crop_black_borders(img):
-    # Convert to grayscale and threshold
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 1, 255, cv2.THRESH_BINARY)
+    after_date = st.sidebar.date_input("Upload date for AFTER image")
+    after_file = st.sidebar.file_uploader("Upload AFTER image", type=["png", "jpg", "tif"], key="after")
 
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        cnt = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(cnt)
-        cropped = img[y:y+h, x:x+w]
-        return cropped
-    else:
-        return img
+    model_choice = st.sidebar.selectbox("Select Model", ["SVM", "CNN", "KMeans"])
 
-def plot_cnn_prediction(pred_probs, class_labels):
-    fig, ax = plt.subplots()
-    ax.bar(class_labels, pred_probs)
-    ax.set_ylabel("Probability")
-    ax.set_ylim([0,1])
-    plt.xticks(rotation=45)
-    plt.tight_layout()
-    return fig
+    if before_file and after_file:
+        before_img = Image.open(before_file).convert("RGB")
+        after_img = Image.open(after_file).convert("RGB")
 
-def generate_heatmap(img1, img2):
-    # Simple absolute difference heatmap
-    diff = cv2.absdiff(img1, img2)
-    heatmap = cv2.applyColorMap(diff, cv2.COLORMAP_JET)
-    return heatmap
+        # Align and crop
+        cropped_before, cropped_after = align_and_crop(before_img, after_img)
 
-def create_geospatial_map():
-    m = folium.Map(location=[20, 0], zoom_start=2)
-    folium.TileLayer('OpenStreetMap').add_to(m)
-    # Example polygon overlays:
-    folium.GeoJson(data={
-        "type": "FeatureCollection",
-        "features": [
-            {"type": "Feature",
-             "properties": {"class": "Vegetation"},
-             "geometry": {"type": "Polygon",
-                          "coordinates": [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]]}},
-            {"type": "Feature",
-             "properties": {"class": "Water"},
-             "geometry": {"type": "Polygon",
-                          "coordinates": [[[-10, -10], [-5, -10], [-5, -5], [-10, -5], [-10, -10]]]}}
-        ]
-    }, style_function=lambda x: {
-        'fillColor': {'Vegetation': 'green', 'Water': 'blue', 'Urban': 'gray', 'Land': 'brown'}.get(x['properties']['class'], 'black'),
-        'color': 'black',
-        'weight': 1,
-        'fillOpacity': 0.5
-    }).add_to(m)
-    return m
+        st.header("Aligned and Cropped BEFORE and AFTER Images")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(cropped_before, caption="BEFORE (Aligned & Cropped)", use_column_width=True)
+        with col2:
+            st.image(cropped_after, caption="AFTER (Aligned & Cropped)", use_column_width=True)
 
-def image_to_bytes(img):
-    is_success, buffer = cv2.imencode(".png", img)
-    io_buf = io.BytesIO(buffer)
-    return io_buf
+        # Change mask
+        change_mask = get_change_mask(cropped_before, cropped_after)
 
-# Page 1: Upload and select model
-def page1():
-    st.title("Satellite Data Analysis - Model Selection and Input")
-    st.write("Upload satellite images and choose your model.")
-    uploaded_before = st.file_uploader("Upload BEFORE Image", type=['png','jpg','jpeg'])
-    uploaded_after = st.file_uploader("Upload AFTER Image", type=['png','jpg','jpeg'])
+        # Show change heatmap on AFTER image only
+        st.header("Change Heatmap (AFTER vs BEFORE)")
+        heatmap = np.zeros((change_mask.shape[0], change_mask.shape[1], 3), dtype=np.uint8)
+        heatmap[..., 2] = change_mask * 255  # highlight changes in blue channel
+        heatmap_img = Image.fromarray(heatmap)
+        heatmap_overlay = Image.blend(cropped_after, heatmap_img, alpha=0.5)
+        st.image(heatmap_overlay, caption="Heatmap Overlay on AFTER Image", use_column_width=True)
 
-    model_choice = st.selectbox("Select Model", ["SVM", "CNN", "KMeans"])
+        # Land classification summary on AFTER image only
+        classification = classify_land(cropped_after)
+        st.header("Land Classification Summary (AFTER Image)")
 
-    if uploaded_before and uploaded_after:
-        img_before = np.array(Image.open(uploaded_before).convert('RGB'))
-        img_after = np.array(Image.open(uploaded_after).convert('RGB'))
+        # Table
+        df_class = pd.DataFrame(list(classification.items()), columns=["Class", "Area (%)"])
+        st.table(df_class)
 
-        st.image([img_before, img_after], caption=["Before", "After"], width=300)
-
-        if st.button("Run Analysis"):
-            st.session_state['img_before'] = img_before
-            st.session_state['img_after'] = img_after
-            st.session_state['model_choice'] = model_choice
-            st.success("Images and model saved. Go to next pages for results.")
-
-# Page 2: Run detection & CNN visualization & download reports
-def page2():
-    st.title("Detection & Model Prediction")
-    if 'img_before' not in st.session_state or 'img_after' not in st.session_state or 'model_choice' not in st.session_state:
-        st.warning("Upload images and select model on Page 1 first.")
-        return
-
-    img_before = st.session_state['img_before']
-    img_after = st.session_state['img_after']
-    model_choice = st.session_state['model_choice']
-
-    st.subheader("Model Selected: " + model_choice)
-
-    # Dummy detection logic (Replace with real models)
-    def dummy_detect(img):
-        # Threshold on blue channel for water detection (simple)
-        blue = img[:,:,2]
-        water_mask = (blue > 100).astype(np.uint8)*255
-        return water_mask
-
-    if model_choice == "SVM":
-        # Dummy SVM prediction: random class probabilities
-        classes = ["Water", "Land", "Urban", "Vegetation"]
-        pred_probs = np.random.dirichlet(np.ones(len(classes)), size=1)[0]
-        detection_mask = dummy_detect(img_after)
-    elif model_choice == "CNN" and cnn_model is not None:
-        # Preprocess image for CNN (assuming classification)
-        img_resized = cv2.resize(img_after, (64,64))
-        x = img_to_array(img_resized)/255.0
-        x = np.expand_dims(x, axis=0)
-        preds = cnn_model.predict(x)[0]
-        classes = ["Water", "Land", "Urban", "Vegetation"]
-        pred_probs = preds
-        detection_mask = dummy_detect(img_after)
-    elif model_choice == "KMeans":
-        # Dummy kmeans clustering to segment image
-        pixel_values = img_after.reshape((-1,3))
-        kmeans = KMeans(n_clusters=4, random_state=42).fit(pixel_values)
-        labels = kmeans.labels_.reshape(img_after.shape[:2])
-        detection_mask = (labels==0).astype(np.uint8)*255
-        classes = ["Cluster 0", "Cluster 1", "Cluster 2", "Cluster 3"]
-        pred_probs = [1.0/4]*4
-    else:
-        st.error("CNN model not loaded or invalid selection.")
-        return
-
-    st.image(detection_mask, caption="Detection Mask", width=400)
-
-    if model_choice in ["SVM","CNN"]:
-        st.subheader("Model Prediction Probabilities")
-        fig = plot_cnn_prediction(pred_probs, classes)
+        # Pie chart
+        fig, ax = plt.subplots()
+        ax.pie(df_class["Area (%)"], labels=df_class["Class"], autopct='%1.1f%%', startangle=90)
+        ax.axis('equal')
         st.pyplot(fig)
 
-    # Download buttons
-    csv_buf = io.StringIO()
-    df = pd.DataFrame({"Class": classes, "Probability": pred_probs})
-    df.to_csv(csv_buf, index=False)
-    st.download_button("Download CSV Summary", data=csv_buf.getvalue(), file_name="summary.csv", mime="text/csv")
+        # Model prediction (dummy)
+        st.header("Model Prediction")
 
-    annotated_img_buf = image_to_bytes(detection_mask)
-    st.download_button("Download Detection Mask Image", data=annotated_img_buf, file_name="detection_mask.png", mime="image/png")
+        if model_choice == "CNN":
+            st.write("Running CNN model (dummy output)...")
+            # preprocess image for CNN dummy
+            transform = transforms.Compose([
+                transforms.Resize((64,64)),
+                transforms.ToTensor()
+            ])
+            input_tensor = transform(cropped_after).unsqueeze(0)
+            with torch.no_grad():
+                outputs = cnn_model(input_tensor)
+                _, predicted = torch.max(outputs, 1)
+            st.write(f"Predicted class (dummy): {predicted.item()}")
 
-# Page 3: Image Alignment, cropping and side-by-side comparison
-def page3():
-    st.title("Image Alignment and Comparison")
+            # CNN visualization
+            st.write("CNN Visualization:")
+            vis_img = cnn_visualization(cropped_after)
+            st.image(vis_img, use_column_width=True)
 
-    if 'img_before' not in st.session_state or 'img_after' not in st.session_state:
-        st.warning("Upload images on Page 1 first.")
-        return
+        elif model_choice == "SVM":
+            st.write("Running SVM model (dummy output)...")
+            # Flatten and preprocess image for dummy SVM
+            img_np = np.array(cropped_after.resize((32,32))).flatten().reshape(1, -1)
+            # Random dummy prediction (since model is not trained)
+            pred = 1  # just dummy fixed output
+            st.write(f"Predicted class (dummy): {pred}")
 
-    img_before = st.session_state['img_before']
-    img_after = st.session_state['img_after']
+        else:
+            st.write("Running KMeans clustering (dummy output)...")
+            st.write("Cluster labels would appear here.")
 
-    st.subheader("Original Reference Image (After)")
-    st.image(img_after, width=350)
+        # Download options
+        st.header("Download Reports")
 
-    st.subheader("Aligning 'Before' image to 'After' image...")
-    aligned_img, H = align_images(img_before, img_after)
+        csv_bytes = get_csv_bytes(classification)
+        st.download_button("Download Classification CSV", data=csv_bytes, file_name="classification_summary.csv", mime="text/csv")
 
-    if H is None:
-        st.warning("Alignment failed; displaying original before image.")
-        aligned_img = img_before
-
-    cropped_aligned_img = crop_black_borders(aligned_img)
-
-    st.subheader("Aligned and Cropped Image")
-    st.image(cropped_aligned_img, width=350)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.image(img_after, caption="Reference Image (After)", width=350)
-    with col2:
-        st.image(cropped_aligned_img, caption="Aligned & Cropped Before Image", width=350)
-
-    # Side-by-side difference heatmap
-    try:
-        cropped_aligned_resized = cv2.resize(cropped_aligned_img, (img_after.shape[1], img_after.shape[0]))
-        heatmap = generate_heatmap(cropped_aligned_resized, img_after)
-        st.subheader("Difference Heatmap (Aligned vs Reference)")
-        st.image(heatmap, width=700)
-    except Exception as e:
-        st.error(f"Error generating heatmap: {e}")
-
-# Page 4: Map classification (vegetation, land, urban, water only)
-def page4():
-    st.title("Geospatial Map and Land Classification")
-
-    if 'img_after' not in st.session_state:
-        st.warning("Upload images on Page 1 first.")
-        return
-
-    img_after = st.session_state['img_after']
-
-    # Dummy classification mask: color-coded map
-    h, w = img_after.shape[:2]
-    class_map = np.zeros((h, w, 3), dtype=np.uint8)
-
-    # Fake segmentation: thresholds for demonstration
-    blue = img_after[:,:,2]
-    green = img_after[:,:,1]
-    red = img_after[:,:,0]
-
-    # Water: high blue & low red/green
-    water_mask = (blue > 120) & (green < 100) & (red < 100)
-    # Vegetation: high green, moderate red and blue
-    vegetation_mask = (green > 120) & (red < 100) & (blue < 100)
-    # Urban: high red & green, moderate blue
-    urban_mask = (red > 130) & (green > 130) & (blue < 100)
-    # Land (others)
-    land_mask = ~(water_mask | vegetation_mask | urban_mask)
-
-    class_map[water_mask] = [0, 0, 255]       # Blue
-    class_map[vegetation_mask] = [0, 255, 0]  # Green
-    class_map[urban_mask] = [128, 128, 128]   # Gray
-    class_map[land_mask] = [165, 42, 42]      # Brown
-
-    st.image(class_map, caption="Classified Map (Water, Vegetation, Urban, Land)", width=600)
-
-    st.subheader("Geospatial Overlay Map")
-    m = create_geospatial_map()
-    st_folium(m, width=700, height=450)
-
-def main():
-    st.sidebar.title("Navigation")
-    page = st.sidebar.radio("Go to", ["Upload & Model Select", "Detection & Prediction", "Image Alignment", "Map Classification"])
-
-    if page == "Upload & Model Select":
-        page1()
-    elif page == "Detection & Prediction":
-        page2()
-    elif page == "Image Alignment":
-        page3()
-    elif page == "Map Classification":
-        page4()
+        # Prepare annotated image download (heatmap overlay)
+        buf = io.BytesIO()
+        heatmap_overlay.save(buf, format='PNG')
+        st.download_button("Download Annotated AFTER Image", data=buf.getvalue(), file_name="annotated_after.png", mime="image/png")
 
 if __name__ == "__main__":
     main()
