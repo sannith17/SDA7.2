@@ -14,8 +14,8 @@ import base64
 from tensorflow.keras.models import load_model
 import joblib
 
-cnn_model = load_model("models/cnn_model.h5")
-svm_model = joblib.load("models/svm_model.pkl")
+cnn_model = load_model("cnn_model.h5")
+svm_model = joblib.load("svm_model.pkl")
 
 
 st.set_page_config(layout="wide")
