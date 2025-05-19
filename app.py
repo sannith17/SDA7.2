@@ -12,9 +12,11 @@ import io
 from sklearn import svm
 from torchvision import transforms
 
-# Initialize session state for page navigation
+# Initialize session state for page navigation and data storage
 if 'page' not in st.session_state:
     st.session_state.page = 1
+if 'heatmap_overlay' not in st.session_state:
+    st.session_state.heatmap_overlay = None
 
 st.set_page_config(layout="wide", page_title="Satellite Image Analysis")
 
@@ -36,7 +38,6 @@ cnn_model = DummyCNN()
 cnn_model.eval()
 svm_model = svm.SVC(probability=True)
 
-# -------- Image Processing Functions --------
 def preprocess_img(img, size=(64,64)):
     img = img.convert("RGB").resize(size)
     img_arr = np.array(img)/255.0
@@ -66,6 +67,9 @@ def align_and_crop(before_img, after_img):
     overlap_mask = np.logical_and(before_mask, after_mask)
 
     coords = np.column_stack(np.where(overlap_mask))
+    if coords.size == 0:
+        return before_img, after_img  # Return original if no overlap
+    
     y0, x0 = coords.min(axis=0)
     y1, x1 = coords.max(axis=0) + 1
 
@@ -79,28 +83,16 @@ def get_change_mask(img1, img2, threshold=30):
     gray2 = cv2.cvtColor(np.array(img2), cv2.COLOR_RGB2GRAY)
     diff = cv2.absdiff(gray1, gray2)
     _, change_mask = cv2.threshold(diff, threshold, 1, cv2.THRESH_BINARY)
-    return change_mask
+    return change_mask.astype(np.uint8)
 
-# -------- Classification Functions --------
 def classify_land(img):
     return {"Vegetation": 35, "Land": 30, "Urban": 25, "Water": 10}
-
-def cnn_visualization(img):
-    heatmap = np.random.rand(img.size, img.size)
-    plt.figure(figsize=(6,6))
-    sns.heatmap(heatmap, cmap="viridis")
-    plt.title("CNN Feature Map (Dummy)")
-    buf = io.BytesIO()
-    plt.savefig(buf, format='png')
-    plt.close()
-    buf.seek(0)
-    return Image.open(buf)
 
 def get_csv_bytes(data_dict):
     df = pd.DataFrame(list(data_dict.items()), columns=["Class", "Area (%)"])
     return df.to_csv(index=False).encode()
 
-# -------- Page Definitions --------
+# -------- Pages --------
 def page1():
     st.header("1. Model Selection")
     st.session_state.model_choice = st.selectbox("Select Analysis Model", ["SVM", "CNN", "KMeans"])
@@ -145,12 +137,21 @@ def page3():
 
 def page4():
     st.header("4. Change Detection Heatmap")
-    heatmap = np.zeros((st.session_state.change_mask.shape, 
-                      st.session_state.change_mask.shape, 3), dtype=np.uint8)
-    heatmap[..., 2] = st.session_state.change_mask * 255
+    
+    # Get dimensions from change mask
+    h, w = st.session_state.change_mask.shape
+    
+    # Create heatmap visualization
+    heatmap = np.zeros((h, w, 3), dtype=np.uint8)
+    heatmap[..., 2] = st.session_state.change_mask * 255  # Red channel
+    
+    # Convert to PIL images
     heatmap_img = Image.fromarray(heatmap)
-    heatmap_overlay = Image.blend(st.session_state.cropped_after, heatmap_img, alpha=0.5)
-    st.image(heatmap_overlay, use_column_width=True)
+    cropped_after = st.session_state.cropped_after.resize((w, h))  # Ensure same size
+    
+    # Create overlay and store in session
+    st.session_state.heatmap_overlay = Image.blend(cropped_after, heatmap_img, alpha=0.5)
+    st.image(st.session_state.heatmap_overlay, use_column_width=True)
     
     if st.button("⬅️ Back"):
         st.session_state.page = 3
@@ -176,8 +177,8 @@ def page5():
     ax.axis('equal')
     st.pyplot(fig)
     
-    # Area Change Calculation
-    total_pixels = st.session_state.change_mask.shape * st.session_state.change_mask.shape
+    # Changed area calculation
+    total_pixels = np.prod(st.session_state.change_mask.shape)
     total_change = (np.sum(st.session_state.change_mask) / total_pixels) * 100
     st.subheader(f"Total Changed Area: {total_change:.2f}%")
     
@@ -187,11 +188,11 @@ def page5():
     st.download_button("Download Classification CSV", data=csv_bytes, 
                       file_name="classification_summary.csv", mime="text/csv")
     
-    buf = io.BytesIO()
-    heatmap_overlay = Image.blend(st.session_state.cropped_after, heatmap_img, alpha=0.5)
-    heatmap_overlay.save(buf, format='PNG')
-    st.download_button("Download Annotated AFTER Image", data=buf.getvalue(), 
-                      file_name="annotated_after.png", mime="image/png")
+    if st.session_state.heatmap_overlay:
+        buf = io.BytesIO()
+        st.session_state.heatmap_overlay.save(buf, format='PNG')
+        st.download_button("Download Annotated Image", data=buf.getvalue(), 
+                          file_name="annotated_after.png", mime="image/png")
     
     if st.button("⬅️ Back"):
         st.session_state.page = 4
